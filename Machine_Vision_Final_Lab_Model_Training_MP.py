@@ -130,6 +130,322 @@ from mediapipe.tasks.python import vision
 import mediapipe as mp 
 
 
+class RandomHorizontalFlipLandmarks:
+    """Randomly flip landmark sequences horizontally.
+    
+    This transform performs a horizontal flip on pose landmarks by:
+    1. Mirroring x-coordinates around the center (0.5 for normalized coordinates)
+    2. Swapping left and right landmark pairs to maintain anatomical consistency
+    
+    The landmark layout is assumed to be (T, 24) where 24 = 8 landmarks × 3 coords:
+    - Indices 0-2: Left Shoulder (x, y, z)
+    - Indices 3-5: Right Shoulder (x, y, z)
+    - Indices 6-8: Left Elbow (x, y, z)
+    - Indices 9-11: Right Elbow (x, y, z)
+    - Indices 12-14: Left Wrist (x, y, z)
+    - Indices 15-17: Right Wrist (x, y, z)
+    - Indices 18-20: Left Hip (x, y, z)
+    - Indices 21-23: Right Hip (x, y, z)
+    
+    Args:
+        p: Probability of applying the flip. Default is 0.5.
+    """
+    
+    # Pairs of (left_start_idx, right_start_idx) for each landmark pair
+    # Each landmark has 3 values (x, y, z), so we swap in groups of 3
+    LANDMARK_PAIRS = [
+        (0, 3),    # Left/Right Shoulder
+        (6, 9),    # Left/Right Elbow
+        (12, 15),  # Left/Right Wrist
+        (18, 21),  # Left/Right Hip
+    ]
+    
+    # X-coordinate indices (every 3rd value starting at 0)
+    X_INDICES = [0, 3, 6, 9, 12, 15, 18, 21]
+    
+    def __init__(self, p: float = 0.5):
+        if not 0 <= p <= 1:
+            raise ValueError(f"Probability p must be in [0, 1], got {p}")
+        self.p = p
+    
+    def __call__(self, landmarks: torch.Tensor) -> torch.Tensor:
+        """Apply random horizontal flip to landmarks.
+        
+        Args:
+            landmarks: Tensor of shape (T, 24) containing landmark coordinates.
+            
+        Returns:
+            Flipped landmarks tensor of the same shape, or original if not flipped.
+        """
+        if torch.rand(1).item() >= self.p:
+            return landmarks
+        
+        # Clone to avoid modifying original tensor
+        flipped = landmarks.clone()
+        
+        # 1. Mirror x-coordinates around center (0.5)
+        # For normalized coordinates in [0, 1], flipped_x = 1 - x
+        for x_idx in self.X_INDICES:
+            flipped[:, x_idx] = 1.0 - flipped[:, x_idx]
+        
+        # 2. Swap left and right landmark pairs
+        for left_start, right_start in self.LANDMARK_PAIRS:
+            # Swap all 3 coordinates (x, y, z) for each pair
+            temp = flipped[:, left_start:left_start+3].clone()
+            flipped[:, left_start:left_start+3] = flipped[:, right_start:right_start+3]
+            flipped[:, right_start:right_start+3] = temp
+        
+        return flipped
+    
+    def __repr__(self) -> str:
+        return f"{self.__class__.__name__}(p={self.p})"
+
+
+class RandomTemporalJitter:
+    """Randomly subsample frames from the landmark sequence.
+    
+    This transform simulates temporal variations by randomly dropping frames
+    from the sequence, effectively creating a faster or jittered version of
+    the motion.
+    
+    Args:
+        p: Probability of applying the jitter. Default is 0.5.
+        drop_ratio: Tuple of (min_ratio, max_ratio) for the fraction of frames
+                    to keep. Default is (0.7, 1.0), meaning 70-100% of frames
+                    are kept.
+    """
+    
+    def __init__(self, p: float = 0.5, drop_ratio: tuple = (0.7, 1.0)):
+        if not 0 <= p <= 1:
+            raise ValueError(f"Probability p must be in [0, 1], got {p}")
+        if not (0 < drop_ratio[0] <= drop_ratio[1] <= 1.0):
+            raise ValueError(f"drop_ratio must satisfy 0 < min <= max <= 1, got {drop_ratio}")
+        self.p = p
+        self.drop_ratio = drop_ratio
+    
+    def __call__(self, landmarks: torch.Tensor) -> torch.Tensor:
+        """Apply random temporal jitter to landmarks.
+        
+        Args:
+            landmarks: Tensor of shape (T, 24) containing landmark coordinates.
+            
+        Returns:
+            Jittered landmarks tensor of shape (T', 24) where T' <= T.
+        """
+        if torch.rand(1).item() >= self.p:
+            return landmarks
+        
+        T = landmarks.shape[0]
+        if T <= 2:  # Don't jitter very short sequences
+            return landmarks
+        
+        # Randomly determine how many frames to keep
+        keep_ratio = torch.empty(1).uniform_(self.drop_ratio[0], self.drop_ratio[1]).item()
+        num_keep = max(2, int(T * keep_ratio))  # Keep at least 2 frames
+        
+        # Randomly select frame indices (sorted to maintain temporal order)
+        indices = torch.randperm(T)[:num_keep].sort().values
+        
+        return landmarks[indices]
+    
+    def __repr__(self) -> str:
+        return f"{self.__class__.__name__}(p={self.p}, drop_ratio={self.drop_ratio})"
+
+
+class RandomScale:
+    """Randomly scale landmark coordinates.
+    
+    This transform simulates distance variations by scaling all landmark
+    coordinates around their center. This is useful for making the model
+    robust to subjects at different distances from the camera.
+    
+    Args:
+        p: Probability of applying the scaling. Default is 0.5.
+        scale_range: Tuple of (min_scale, max_scale). Default is (0.8, 1.2).
+    """
+    
+    def __init__(self, p: float = 0.5, scale_range: tuple = (0.8, 1.2)):
+        if not 0 <= p <= 1:
+            raise ValueError(f"Probability p must be in [0, 1], got {p}")
+        if scale_range[0] <= 0 or scale_range[0] > scale_range[1]:
+            raise ValueError(f"scale_range must satisfy 0 < min <= max, got {scale_range}")
+        self.p = p
+        self.scale_range = scale_range
+    
+    def __call__(self, landmarks: torch.Tensor) -> torch.Tensor:
+        """Apply random scaling to landmarks.
+        
+        Args:
+            landmarks: Tensor of shape (T, 24) containing landmark coordinates.
+            
+        Returns:
+            Scaled landmarks tensor of the same shape.
+        """
+        if torch.rand(1).item() >= self.p:
+            return landmarks
+        
+        # Random scale factor
+        scale = torch.empty(1).uniform_(self.scale_range[0], self.scale_range[1]).item()
+        
+        # Clone to avoid modifying original
+        scaled = landmarks.clone()
+        
+        # Compute the center of all landmarks across all frames
+        # We scale around the mean position to keep landmarks centered
+        center = scaled.mean(dim=0, keepdim=True)
+        
+        # Scale around center
+        scaled = center + (scaled - center) * scale
+        
+        return scaled
+    
+    def __repr__(self) -> str:
+        return f"{self.__class__.__name__}(p={self.p}, scale_range={self.scale_range})"
+
+
+class RandomNoise:
+    """Add random Gaussian noise to landmark coordinates.
+    
+    This transform adds small random perturbations to simulate detection
+    noise and make the model more robust to imprecise landmark detection.
+    
+    Args:
+        p: Probability of applying noise. Default is 0.5.
+        std: Standard deviation of the Gaussian noise. Default is 0.01.
+             For normalized coordinates in [0, 1], 0.01 is about 1% noise.
+    """
+    
+    def __init__(self, p: float = 0.5, std: float = 0.01):
+        if not 0 <= p <= 1:
+            raise ValueError(f"Probability p must be in [0, 1], got {p}")
+        if std < 0:
+            raise ValueError(f"std must be non-negative, got {std}")
+        self.p = p
+        self.std = std
+    
+    def __call__(self, landmarks: torch.Tensor) -> torch.Tensor:
+        """Apply random Gaussian noise to landmarks.
+        
+        Args:
+            landmarks: Tensor of shape (T, 24) containing landmark coordinates.
+            
+        Returns:
+            Noisy landmarks tensor of the same shape.
+        """
+        if torch.rand(1).item() >= self.p:
+            return landmarks
+        
+        # Add Gaussian noise
+        noise = torch.randn_like(landmarks) * self.std
+        return landmarks + noise
+    
+    def __repr__(self) -> str:
+        return f"{self.__class__.__name__}(p={self.p}, std={self.std})"
+
+
+class Compose:
+    """Compose multiple transforms together.
+    
+    Applies a sequence of transforms in order.
+    
+    Args:
+        transforms: List of transform objects to apply.
+    """
+    
+    def __init__(self, transforms: list):
+        self.transforms = transforms
+    
+    def __call__(self, landmarks: torch.Tensor) -> torch.Tensor:
+        """Apply all transforms in sequence.
+        
+        Args:
+            landmarks: Tensor of shape (T, 24) containing landmark coordinates.
+            
+        Returns:
+            Transformed landmarks tensor.
+        """
+        for transform in self.transforms:
+            landmarks = transform(landmarks)
+        return landmarks
+    
+    def __repr__(self) -> str:
+        lines = [f"{self.__class__.__name__}(["]
+        for t in self.transforms:
+            lines.append(f"    {t},")
+        lines.append("])")
+        return "\n".join(lines)
+
+
+class RandomSequenceRepeat:
+    """Repeat landmark sequences to generate training examples with higher counts.
+    
+    This label-aware transform concatenates a sequence with itself one or more
+    times to create a training example representing more repetitions of the
+    exercise. For example, a sequence with 2 push-ups repeated twice becomes
+    a sequence representing 4 push-ups.
+    
+    Note: This transform takes (landmarks, label) as input and returns
+    (new_landmarks, new_label), unlike regular transforms that only modify
+    landmarks.
+    
+    Args:
+        p: Probability of applying the repeat. Default is 0.5.
+        max_count: Maximum allowed count after repetition. Default is 10.
+        max_repeats: Maximum number of times to repeat (not including original).
+                     Default is 3 (so sequence can be 1x to 4x original).
+    """
+    
+    def __init__(self, p: float = 0.5, max_count: int = 10, max_repeats: int = 3):
+        if not 0 <= p <= 1:
+            raise ValueError(f"Probability p must be in [0, 1], got {p}")
+        if max_count <= 0:
+            raise ValueError(f"max_count must be positive, got {max_count}")
+        if max_repeats <= 0:
+            raise ValueError(f"max_repeats must be positive, got {max_repeats}")
+        self.p = p
+        self.max_count = max_count
+        self.max_repeats = max_repeats
+    
+    def __call__(self, landmarks: torch.Tensor, label: int) -> tuple:
+        """Apply random sequence repetition.
+        
+        Args:
+            landmarks: Tensor of shape (T, 24) containing landmark coordinates.
+            label: Integer count (e.g., number of push-ups).
+            
+        Returns:
+            Tuple of (repeated_landmarks, new_label) where:
+            - repeated_landmarks: Tensor of shape (T * num_repeats, 24)
+            - new_label: Integer = label * num_repeats
+        """
+        if torch.rand(1).item() >= self.p:
+            return landmarks, label
+        
+        if label <= 0:
+            return landmarks, label
+        
+        # Calculate maximum allowed repeats based on max_count constraint
+        max_allowed_repeats = self.max_count // label
+        
+        if max_allowed_repeats <= 1:
+            # Can't repeat without exceeding max_count
+            return landmarks, label
+        
+        # Cap at max_repeats parameter (total copies, not additional copies)
+        max_allowed_repeats = min(max_allowed_repeats, self.max_repeats + 1)
+        
+        # Randomly choose number of total copies (at least 2 for a repeat to happen)
+        num_copies = torch.randint(2, max_allowed_repeats + 1, (1,)).item()
+        
+        # Concatenate the sequence
+        repeated_landmarks = torch.cat([landmarks] * num_copies, dim=0)
+        new_label = label * num_copies
+        
+        return repeated_landmarks, new_label
+    
+    def __repr__(self) -> str:
+        return f"{self.__class__.__name__}(p={self.p}, max_count={self.max_count}, max_repeats={self.max_repeats})"
+
 class VideoDataset(Dataset):
     """Dataset for extracting pose landmarks from videos using MediaPipe.
     
@@ -156,12 +472,16 @@ class VideoDataset(Dataset):
     # Default directory for caching extracted landmarks
     DEFAULT_CACHE_DIR = ".landmark_cache"
 
-    def __init__(self, video_dir, transform=None, model_path=None, cache_dir=None):
+    def __init__(self, video_dir, transform=None, label_transform=None, model_path=None, cache_dir=None):
         """Initialize the dataset.
         
         Args:
             video_dir: Path to directory containing video files.
-            transform: Optional transform to apply to the landmark sequence.
+            transform: Optional transform to apply to the landmark sequence only.
+            label_transform: Optional transform that takes (landmarks, label) and
+                           returns (transformed_landmarks, new_label). Applied after
+                           regular transform. Used for augmentations like sequence
+                           repetition that modify both landmarks and labels.
             model_path: Path to the .models/pose_landmarker.task model file.
                         Defaults to '.models/pose_landmarker.task' in current directory.
             cache_dir: Path to directory for caching extracted landmarks.
@@ -169,6 +489,7 @@ class VideoDataset(Dataset):
         """
         self.video_dir = video_dir
         self.transform = transform
+        self.label_transform = label_transform
         self.model_path = model_path or self.DEFAULT_MODEL_PATH
         self.cache_dir = cache_dir or self.DEFAULT_CACHE_DIR
         
@@ -229,8 +550,13 @@ class VideoDataset(Dataset):
         
         label = self.labels[idx]
 
+        # Apply regular transform (landmarks only)
         if self.transform:
             landmarks_sequence = self.transform(landmarks_sequence)
+        
+        # Apply label-aware transform (modifies both landmarks and label)
+        if self.label_transform:
+            landmarks_sequence, label = self.label_transform(landmarks_sequence, label)
 
         return landmarks_sequence, label
 
@@ -337,32 +663,51 @@ def collate_fn(batch):
     return landmarks_batch, labels_batch, lengths_batch
 
 
-def get_dataloaders(video_dir, batch_size=4, val_split=0.2):
+def get_dataloaders(video_dir, batch_size=4, val_split=0.2, train_transform=None, train_label_transform=None):
     """Create train and validation dataloaders for landmark sequences.
     
     Args:
         video_dir: Path to directory containing video files.
         batch_size: Number of samples per batch.
         val_split: Fraction of data to use for validation.
+        train_transform: Optional transform to apply to training landmarks only.
+                         Validation data will not have any transform applied.
+        train_label_transform: Optional label-aware transform that takes
+                               (landmarks, label) and returns (new_landmarks, new_label).
+                               Only applied to training data.
         
     Returns:
         train_loader: DataLoader for training data.
         val_loader: DataLoader for validation data.
     """
-
-    full_dataset = VideoDataset(video_dir)
-
+    
+    # First, create a dataset without transforms to determine the split indices
+    full_dataset = VideoDataset(video_dir, transform=None)
+    
     val_size = int(len(full_dataset) * val_split)
     train_size = len(full_dataset) - val_size
 
-    train_dataset, val_dataset = random_split(
-        full_dataset,
-        [train_size, val_size],
-        generator=torch.Generator().manual_seed(42)
+    # Get the indices for train and validation splits
+    generator = torch.Generator().manual_seed(42)
+    indices = torch.randperm(len(full_dataset), generator=generator).tolist()
+    train_indices = indices[:train_size]
+    val_indices = indices[train_size:]
+    
+    # Create separate datasets for train (with augmentation) and val (without)
+    train_dataset = VideoDataset(
+        video_dir, 
+        transform=train_transform,
+        label_transform=train_label_transform
     )
+    val_dataset = VideoDataset(video_dir, transform=None)
+    
+    # Use Subset to apply the split indices
+    from torch.utils.data import Subset
+    train_subset = Subset(train_dataset, train_indices)
+    val_subset = Subset(val_dataset, val_indices)
 
     train_loader = DataLoader(
-        train_dataset,
+        train_subset,
         batch_size=batch_size,
         shuffle=True,
         num_workers=0,
@@ -370,14 +715,19 @@ def get_dataloaders(video_dir, batch_size=4, val_split=0.2):
     )
 
     val_loader = DataLoader(
-        val_dataset,
+        val_subset,
         batch_size=batch_size,
         shuffle=False,
         num_workers=0,
         collate_fn=collate_fn
     )
 
-    print(f"Train: {len(train_dataset)} videos, Val: {len(val_dataset)} videos\n")
+    print(f"Train: {len(train_subset)} videos, Val: {len(val_subset)} videos")
+    if train_transform:
+        print(f"Train transform: {train_transform}")
+    if train_label_transform:
+        print(f"Train label transform: {train_label_transform}")
+    print()
 
     return train_loader, val_loader
 
@@ -537,7 +887,7 @@ def evaluate(model, test_loader, criterion, device):
     return total_loss / len(test_loader), correct / total
 
 
-def train_model(epochs=2000, lr=1e-3):
+def train_model(epochs=650, lr=1e-3):
     """Train and return your model."""
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}\n")
@@ -547,7 +897,26 @@ def train_model(epochs=2000, lr=1e-3):
     optimizer = optim.Adam(model.parameters(), lr=lr)
     criterion = nn.CrossEntropyLoss()
 
-    train_loader, val_loader = get_dataloaders(video_dir='./video-data')
+    # Create training transform with data augmentation
+    # Each transform is applied independently with its own probability
+    train_transform = Compose([
+        RandomHorizontalFlipLandmarks(p=0.5),  # Mirror left/right
+        # RandomRotation(p=0.5, angle_range=(-15.0, 15.0)),  # Simulate camera/subject tilt
+        RandomTemporalJitter(p=0.5, drop_ratio=(0.7, 1.0)),  # Random frame dropping
+        RandomScale(p=0.5, scale_range=(0.8, 1.2)),  # Simulate distance variations
+        RandomNoise(p=0.5, std=0.01),  # Simulate detection noise
+    ])
+    
+    # Label-aware transform for sequence repetition
+    # Repeats sequences to generate higher counts (max 10 pushups)
+    train_label_transform = RandomSequenceRepeat(p=0.3, max_count=10, max_repeats=3)
+    
+    train_loader, val_loader = get_dataloaders(
+        video_dir='./video-data',
+        batch_size=4,
+        train_transform=train_transform,
+        train_label_transform=train_label_transform
+    )
     print("Got dataloaders.\n")
 
     print("Go time. Let the training commence.\n")
