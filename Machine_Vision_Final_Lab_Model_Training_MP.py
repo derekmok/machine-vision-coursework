@@ -8,7 +8,7 @@
 #       format_version: '1.3'
 #       jupytext_version: 1.18.1
 #   kernelspec:
-#     display_name: .venv
+#     display_name: Python 3 (ipykernel)
 #     language: python
 #     name: python3
 # ---
@@ -112,6 +112,9 @@ print(f"\nTotal: {len(video_names)} files")
 # Please modify this code to suit you best, as you decide on your preferred model architecture.
 
 # For example, below here we are padding every video to 1,000 frames. That may or may not be a good idea.
+# !mkdir -p .models
+# !wget -nc -O .models/pose_landmarker.task https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_heavy/float16/1/pose_landmarker_heavy.task
+
 
 
 import torch
@@ -122,7 +125,9 @@ import cv2
 import numpy as np
 from torchvision import tv_tensors
 from torchvision.transforms import v2
-import mediapipe as mp
+from mediapipe.tasks import python as mp_tasks
+from mediapipe.tasks.python import vision
+import mediapipe as mp 
 
 
 class VideoDataset(Dataset):
@@ -146,15 +151,29 @@ class VideoDataset(Dataset):
         23, 24,  # Left/Right Hip
     ]
 
-    def __init__(self, video_dir, transform=None):
+    # Default path to the pose landmarker model file
+    DEFAULT_MODEL_PATH = ".models/pose_landmarker.task"
+    # Default directory for caching extracted landmarks
+    DEFAULT_CACHE_DIR = ".landmark_cache"
+
+    def __init__(self, video_dir, transform=None, model_path=None, cache_dir=None):
         """Initialize the dataset.
         
         Args:
             video_dir: Path to directory containing video files.
             transform: Optional transform to apply to the landmark sequence.
+            model_path: Path to the .models/pose_landmarker.task model file.
+                        Defaults to '.models/pose_landmarker.task' in current directory.
+            cache_dir: Path to directory for caching extracted landmarks.
+                       Defaults to '.landmark_cache' in current directory.
         """
         self.video_dir = video_dir
         self.transform = transform
+        self.model_path = model_path or self.DEFAULT_MODEL_PATH
+        self.cache_dir = cache_dir or self.DEFAULT_CACHE_DIR
+        
+        # Create cache directory if it doesn't exist
+        os.makedirs(self.cache_dir, exist_ok=True)
 
         self.video_files = [
             f for f in os.listdir(video_dir)
@@ -165,15 +184,49 @@ class VideoDataset(Dataset):
             int(f.split('_')[0]) for f in self.video_files
         ]
 
-        # Initialize MediaPipe Pose
-        self.mp_pose = mp.solutions.pose
+    def _create_landmarker(self):
+        """Create a PoseLandmarker instance configured for video processing."""
+        base_options = mp_tasks.BaseOptions(model_asset_path=self.model_path)
+        options = vision.PoseLandmarkerOptions(
+            base_options=base_options,
+            running_mode=vision.RunningMode.VIDEO,
+            num_poses=1,
+            min_pose_detection_confidence=0.5,
+            min_pose_presence_confidence=0.5,
+            min_tracking_confidence=0.5,
+            output_segmentation_masks=False
+        )
+        return vision.PoseLandmarker.create_from_options(options)
 
     def __len__(self):
         return len(self.video_files)
 
+    def _get_cache_path(self, video_filename):
+        """Get the cache file path for a video file.
+        
+        Args:
+            video_filename: Name of the video file (not full path).
+            
+        Returns:
+            Path to the corresponding cache file (.pt extension).
+        """
+        # Replace video extension with .pt for cache file
+        cache_filename = os.path.splitext(video_filename)[0] + '.pt'
+        return os.path.join(self.cache_dir, cache_filename)
+
     def __getitem__(self, idx):
-        video_path = os.path.join(self.video_dir, self.video_files[idx])
-        landmarks_sequence = self._extract_landmarks(video_path)
+        video_filename = self.video_files[idx]
+        cache_path = self._get_cache_path(video_filename)
+        
+        # Try to load from cache first
+        if os.path.exists(cache_path):
+            landmarks_sequence = torch.load(cache_path, weights_only=True)
+        else:
+            # Extract landmarks and save to cache
+            video_path = os.path.join(self.video_dir, video_filename)
+            landmarks_sequence = self._extract_landmarks(video_path)
+            torch.save(landmarks_sequence, cache_path)
+        
         label = self.labels[idx]
 
         if self.transform:
@@ -194,13 +247,19 @@ class VideoDataset(Dataset):
         """
         cap = cv2.VideoCapture(path)
         landmarks_list = []
+        
+        # Get video FPS for timestamp calculation
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        if fps <= 0:
+            fps = 30.0  # Default to 30 FPS if unknown
+        
+        frame_duration_ms = 1000.0 / fps
+        frame_idx = 0
 
-        with self.mp_pose.Pose(
-            static_image_mode=False,
-            model_complexity=1,
-            min_detection_confidence=0.5,
-            min_tracking_confidence=0.5
-        ) as pose:
+        # Create a new landmarker for each video (VIDEO mode requires sequential timestamps)
+        landmarker = self._create_landmarker()
+
+        try:
             while True:
                 ret, frame = cap.read()
                 if not ret:
@@ -209,22 +268,35 @@ class VideoDataset(Dataset):
                 # Convert BGR to RGB for MediaPipe
                 frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 
-                # Process the frame
-                results = pose.process(frame_rgb)
+                # Create MediaPipe Image from numpy array
+                mp_frame = mp.Image(
+                    image_format=mp.ImageFormat.SRGB,
+                    data=frame_rgb
+                )
+                
+                # Calculate timestamp in milliseconds for this frame
+                timestamp_ms = int(frame_idx * frame_duration_ms)
+                
+                # Detect pose landmarks
+                result = landmarker.detect_for_video(mp_frame, timestamp_ms)
 
                 # Extract landmarks for the frame
                 frame_landmarks = []
-                if results.pose_landmarks:
+                if result.pose_landmarks and len(result.pose_landmarks) > 0:
+                    pose_landmarks = result.pose_landmarks[0]
                     for idx in self.LANDMARK_INDICES:
-                        landmark = results.pose_landmarks.landmark[idx]
+                        landmark = pose_landmarks[idx]
                         frame_landmarks.extend([landmark.x, landmark.y, landmark.z])
                 else:
                     # No pose detected, fill with zeros
                     frame_landmarks = [0.0] * (len(self.LANDMARK_INDICES) * 3)
 
                 landmarks_list.append(frame_landmarks)
+                frame_idx += 1
 
-        cap.release()
+        finally:
+            landmarker.close()
+            cap.release()
 
         # Convert to tensor: shape (T, 24)
         landmarks_tensor = torch.tensor(landmarks_list, dtype=torch.float32)
@@ -343,34 +415,62 @@ import torch
 import torch.nn as nn
 from huggingface_hub import HfApi, hf_hub_download
 
-
-class SimpleVideoClassifier(nn.Module):
-    def __init__(self, num_classes=10):
-        super().__init__()
-        # Average over frames, then use a simple CNN
-        self.conv = nn.Sequential(
-            nn.Conv2d(3, 32, 3, padding=1),
-            nn.ReLU(),
-            nn.MaxPool2d(2),
-            nn.Conv2d(32, 64, 3, padding=1),
-            nn.ReLU(),
-            nn.MaxPool2d(2),
-            nn.AdaptiveAvgPool2d((4, 4))
-        )
-        self.fc = nn.Sequential(
-            nn.Linear(64 * 4 * 4, 128),
-            nn.ReLU(),
-            nn.Linear(128, num_classes)
-        )
+class CausalConv1d(nn.Module):
+    """ A 1D convolution that does not look into the future (causal). """
+    def __init__(self, in_channels, out_channels, kernel_size, dilation):
+        super(CausalConv1d, self).__init__()
+        self.padding = (kernel_size - 1) * dilation
+        self.conv = nn.Conv1d(in_channels, out_channels, kernel_size, 
+                              padding=self.padding, dilation=dilation)
 
     def forward(self, x):
-        # x: (B, C, T, H, W)
-        # Average over time dimension
-        x = x.mean(dim=2)  # (B, C, H, W)
+        # x shape: (batch, channels, seq_len)
         x = self.conv(x)
-        x = x.view(x.size(0), -1)
-        x = self.fc(x)
+        # Remove the padding from the end to keep length consistent
+        if self.padding > 0:
+            x = x[:, :, :-self.padding]
         return x
+
+class SimpleVideoClassifier(nn.Module):
+    def __init__(self, num_joints, num_channels=64):
+        super().__init__()
+        input_dim = num_joints * 3 # X, Y, Z per joint
+
+        # Stack of dilated convolutions
+        # Dilation increases receptive field: 1, 2, 4, 8...
+        # This allows the net to see long-range patterns (like a slow pushup)
+        self.net = nn.Sequential(
+            CausalConv1d(input_dim, num_channels, kernel_size=3, dilation=1),
+            nn.ReLU(),
+            CausalConv1d(num_channels, num_channels, kernel_size=3, dilation=2),
+            nn.ReLU(),
+            CausalConv1d(num_channels, num_channels, kernel_size=3, dilation=4),
+            nn.ReLU(),
+            CausalConv1d(num_channels, num_channels, kernel_size=3, dilation=8),
+            nn.ReLU(),
+        )
+        
+        # Final regressor: Output 1 value per frame (the "density")
+        self.regressor = nn.Conv1d(num_channels, 1, kernel_size=1)
+        
+        # Force positive output (counts can't be negative)
+        self.relu = nn.ReLU()
+
+    def forward(self, x):
+        # 1. Permute for Conv1d: (batch, input_dim, seq_len)
+        x = x.permute(0, 2, 1)
+        
+        # 2. Extract Features
+        features = self.net(x)
+        
+        # 3. Predict per-frame density
+        density = self.regressor(features) # Shape: (batch, 1, seq_len)
+        density = self.relu(density)
+        
+        # 4. Transpose back
+        density = density.permute(0, 2, 1) # Shape: (batch, seq_len, 1)
+        
+        return density
 
 
 
@@ -388,6 +488,7 @@ class SimpleVideoClassifier(nn.Module):
 
 # %% id="EueH4HSdcLlE"
 import torch.optim as optim
+import torch.nn.functional as F
 
 
 def train_epoch(model, train_loader, optimizer, criterion, device):
@@ -396,19 +497,23 @@ def train_epoch(model, train_loader, optimizer, criterion, device):
     correct = 0
     total = 0
 
-    for batch_idx, (data, target) in enumerate(train_loader):
-        data, target = data.to(device), target.to(device)
+    for batch_idx, (landmarks, target, _) in enumerate(train_loader):
+        landmarks, target = landmarks.to(device), target.to(device)
 
         optimizer.zero_grad()
-        output = model(data)
-        loss = criterion(output, target)
+        output = model(landmarks)
+        total_count = output.sum(dim=1).squeeze()
+        loss = F.mse_loss(total_count, target.float())
         loss.backward()
         optimizer.step()
 
         total_loss += loss.item()
-        pred = output.argmax(dim=1)
+        pred = torch.round(total_count)
         correct += pred.eq(target).sum().item()
         total += target.size(0)
+
+        # if batch_idx % 4 == 0:
+        #     print(f"Batch {batch_idx}/{len(train_loader)}: Loss {loss.item():.4f}, Accuracy {correct / total:.4f}, Pred {pred}, Target {target}, Correct {correct}")
 
     return total_loss / len(train_loader), correct / total
 
@@ -420,23 +525,24 @@ def evaluate(model, test_loader, criterion, device):
     total = 0
 
     with torch.no_grad():
-        for data, target in test_loader:
-            data, target = data.to(device), target.to(device)
-            output = model(data)
-            total_loss += criterion(output, target).item()
-            pred = output.argmax(dim=1)
+        for landmarks, target, _ in test_loader:
+            landmarks, target = landmarks.to(device), target.to(device)
+            output = model(landmarks)
+            total_count = output.sum(dim=1).squeeze()
+            total_loss += F.mse_loss(total_count, target.float())
+            pred = torch.round(total_count)
             correct += pred.eq(target).sum().item()
             total += target.size(0)
 
     return total_loss / len(test_loader), correct / total
 
 
-def train_model(epochs=5, lr=1e-3):
+def train_model(epochs=2000, lr=1e-3):
     """Train and return your model."""
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}\n")
 
-    model = SimpleVideoClassifier().to(device)
+    model = SimpleVideoClassifier(num_joints=8).to(device)
     print("Instantiated model.\n")
     optimizer = optim.Adam(model.parameters(), lr=lr)
     criterion = nn.CrossEntropyLoss()
