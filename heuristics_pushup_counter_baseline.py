@@ -83,7 +83,7 @@ def get_dataloaders(video_dir, batch_size=4, val_split=0.2):
     return train_loader, val_loader
 
 
-video_dir = '../video-data'
+video_dir = './video-data'
 
 # %%
 from count_pushups_heuristic import (
@@ -162,7 +162,7 @@ def run_heuristic_evaluation(
 # %% colab={"base_uri": "https://localhost:8080/"} id="lHI68u4XhCGB" outputId="c28ba0d4-cb87-4076-eb13-ab93d597ef10"
 # Run the evaluation
 counter, train_metrics, val_metrics = run_heuristic_evaluation(
-    video_dir='../video-data',
+    video_dir='./video-data',
 )
 
 # %% [markdown]
