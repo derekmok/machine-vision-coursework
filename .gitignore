@@ -230,3 +230,5 @@ pyrightconfig.json
 video-data/**
 .models/
 .landmark_cache/
+.idea
+*.iml

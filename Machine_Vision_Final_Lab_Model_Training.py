@@ -19,6 +19,9 @@
 # %% colab={"base_uri": "https://localhost:8080/"} id="d4XrZuAWeoUc" outputId="704d370d-b09a-4427-c92f-1d02ca74b0d7"
 # !pip install boto3 -q
 # !pip install opencv-python torch numpy torchvision
+# !git init .
+# !git remote add origin https://github.com/derekmok/machine-vision-coursework.git
+# !git pull origin main
 
 # %% [markdown] id="PMr99Yo7x8N1"
 # ## Download the data
@@ -120,8 +123,7 @@ from torch.utils.data import Dataset, DataLoader, random_split
 import os
 import cv2
 import numpy as np
-from torchvision import tv_tensors
-from torchvision.transforms import v2
+
 
 
 class VideoDataset(Dataset):
