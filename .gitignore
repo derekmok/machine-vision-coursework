@@ -232,3 +232,5 @@ video-data/**
 .landmark_cache/
 .idea
 *.iml
+.ipynb_checkpoints
+.landmark_cache_unsmoothed

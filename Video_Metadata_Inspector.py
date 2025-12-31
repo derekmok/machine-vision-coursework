@@ -110,12 +110,9 @@ pd.set_option('display.max_rows', None)
 pd.set_option('display.max_columns', None)
 pd.set_option('display.width', None)
 
-print("=" * 80)
-print("VIDEO METADATA")
-print("=" * 80)
 df_display = df[['filename', 'framerate', 'frame_count', 'duration_seconds']].copy()
 df_display['duration_seconds'] = df_display['duration_seconds'].round(2)
-print(df_display.to_string(index=False))
+df_display
 
 # %% [markdown]
 # ## Summary Statistics
@@ -124,40 +121,58 @@ print(df_display.to_string(index=False))
 # Filter out any videos with errors
 df_valid = df[df['error'].isna()].copy()
 
-print("=" * 80)
-print("SUMMARY STATISTICS")
-print("=" * 80)
-
 # Statistics for each field
 stats_columns = ['framerate', 'frame_count', 'duration_seconds']
-stats_rows = ['count', 'mean', 'std', 'min', '25%', '50%', '75%', 'max']
 
-summary_stats = df_valid[stats_columns].describe()
-print("\n")
-print(summary_stats.round(2).to_string())
+summary_stats_df = df_valid[stats_columns].describe().round(2)
+summary_stats_df
 
 # %%
-# Additional summary information
-print("\n" + "=" * 80)
-print("ADDITIONAL INSIGHTS")
-print("=" * 80)
+# Additional summary information as a consolidated DataFrame
+unique_fps = sorted(df_valid['framerate'].unique())
+most_common_fps = df_valid['framerate'].mode().values[0]
+min_frame_idx = df_valid['frame_count'].idxmin()
+max_frame_idx = df_valid['frame_count'].idxmax()
+total_duration_sec = df_valid['duration_seconds'].sum()
+total_duration_min = total_duration_sec / 60
+min_duration_idx = df_valid['duration_seconds'].idxmin()
+max_duration_idx = df_valid['duration_seconds'].idxmax()
 
-print(f"\nTotal videos analyzed: {len(df_valid)}")
-print(f"Videos with errors: {len(df) - len(df_valid)}")
+insights_data = {
+    'Category': [
+        'Overview', 'Overview',
+        'Framerate', 'Framerate',
+        'Frame Count', 'Frame Count', 'Frame Count',
+        'Duration', 'Duration', 'Duration'
+    ],
+    'Metric': [
+        'Total videos analyzed',
+        'Videos with errors',
+        'Unique framerates',
+        'Most common FPS',
+        'Total frames (all videos)',
+        'Shortest video',
+        'Longest video',
+        'Total duration',
+        'Shortest video',
+        'Longest video'
+    ],
+    'Value': [
+        str(len(df_valid)),
+        str(len(df) - len(df_valid)),
+        ', '.join([f"{fps:.2f}" for fps in unique_fps]),
+        f"{most_common_fps:.2f}",
+        f"{df_valid['frame_count'].sum():,}",
+        f"{df_valid.loc[min_frame_idx, 'filename']} ({df_valid['frame_count'].min()} frames)",
+        f"{df_valid.loc[max_frame_idx, 'filename']} ({df_valid['frame_count'].max()} frames)",
+        f"{total_duration_sec:.2f} seconds ({total_duration_min:.2f} minutes)",
+        f"{df_valid.loc[min_duration_idx, 'filename']} ({df_valid['duration_seconds'].min():.2f}s)",
+        f"{df_valid.loc[max_duration_idx, 'filename']} ({df_valid['duration_seconds'].max():.2f}s)"
+    ]
+}
 
-print(f"\n--- Framerate ---")
-print(f"  Unique framerates: {sorted(df_valid['framerate'].unique())}")
-print(f"  Most common: {df_valid['framerate'].mode().values[0]:.2f} FPS")
-
-print(f"\n--- Frame Count ---")
-print(f"  Total frames (all videos): {df_valid['frame_count'].sum():,}")
-print(f"  Shortest video: {df_valid.loc[df_valid['frame_count'].idxmin(), 'filename']} ({df_valid['frame_count'].min()} frames)")
-print(f"  Longest video: {df_valid.loc[df_valid['frame_count'].idxmax(), 'filename']} ({df_valid['frame_count'].max()} frames)")
-
-print(f"\n--- Duration ---")
-print(f"  Total duration (all videos): {df_valid['duration_seconds'].sum():.2f} seconds ({df_valid['duration_seconds'].sum() / 60:.2f} minutes)")
-print(f"  Shortest video: {df_valid.loc[df_valid['duration_seconds'].idxmin(), 'filename']} ({df_valid['duration_seconds'].min():.2f}s)")
-print(f"  Longest video: {df_valid.loc[df_valid['duration_seconds'].idxmax(), 'filename']} ({df_valid['duration_seconds'].max():.2f}s)")
+insights_df = pd.DataFrame(insights_data)
+insights_df
 
 # %% [markdown]
 # ## Grouped Statistics by Label
@@ -166,18 +181,13 @@ print(f"  Longest video: {df_valid.loc[df_valid['duration_seconds'].idxmax(), 'f
 # Extract label from filename (first character before underscore)
 df_valid['label'] = df_valid['filename'].apply(lambda x: x.split('_')[0])
 
-print("=" * 80)
-print("STATISTICS GROUPED BY LABEL (Pushup Count)")
-print("=" * 80)
-
-grouped = df_valid.groupby('label').agg({
+grouped_df = df_valid.groupby('label').agg({
     'filename': 'count',
     'framerate': ['mean', 'std'],
     'frame_count': ['mean', 'std', 'min', 'max'],
     'duration_seconds': ['mean', 'std', 'min', 'max']
 }).round(2)
 
-grouped.columns = ['_'.join(col).strip() for col in grouped.columns.values]
-grouped = grouped.rename(columns={'filename_count': 'video_count'})
-print("\n")
-print(grouped.to_string())
+grouped_df.columns = ['_'.join(col).strip() for col in grouped_df.columns.values]
+grouped_df = grouped_df.rename(columns={'filename_count': 'video_count'})
+grouped_df

@@ -1,4 +1,5 @@
 import torch
+import torch.nn.functional as F
 
 class Compose:
     """Compose multiple transforms together.
@@ -12,18 +13,20 @@ class Compose:
     def __init__(self, transforms: list):
         self.transforms = transforms
     
-    def __call__(self, landmarks: torch.Tensor) -> torch.Tensor:
+    def __call__(self, landmarks: torch.Tensor, label: int) -> tuple[torch.Tensor, int]:
         """Apply all transforms in sequence.
         
         Args:
-            landmarks: Tensor of shape (T, 24) containing landmark coordinates.
+            landmarks: Tensor of shape (T, 6) containing angle features.
+            label: Integer count.
             
         Returns:
-            Transformed landmarks tensor.
+            Tuple of (transformed_landmarks, label).
         """
         for transform in self.transforms:
-            landmarks = transform(landmarks)
-        return landmarks
+            landmarks, label = transform(landmarks, label)
+        return landmarks, label
+
 
 class RandomSequenceRepeat:
     """Repeat landmark sequences to generate training examples with higher counts.
@@ -92,72 +95,63 @@ class RandomSequenceRepeat:
         
         return repeated_landmarks, new_label
 
+
 class RandomHorizontalFlipLandmarks:
     """Randomly flip landmark sequences horizontally.
     
-    This transform performs a horizontal flip on pose landmarks by:
-    1. Mirroring x-coordinates around the center (0.5 for normalized coordinates)
-    2. Swapping left and right landmark pairs to maintain anatomical consistency
+    This transform performs a horizontal flip on pose angle features by:
+    1. Swapping left and right angle values to maintain anatomical consistency.
     
-    The landmark layout is assumed to be (T, 24) where 24 = 8 landmarks × 3 coords:
-    - Indices 0-2: Left Shoulder (x, y, z)
-    - Indices 3-5: Right Shoulder (x, y, z)
-    - Indices 6-8: Left Elbow (x, y, z)
-    - Indices 9-11: Right Elbow (x, y, z)
-    - Indices 12-14: Left Wrist (x, y, z)
-    - Indices 15-17: Right Wrist (x, y, z)
-    - Indices 18-20: Left Hip (x, y, z)
-    - Indices 21-23: Right Hip (x, y, z)
+    The angle layout is assumed to be (T, 6):
+    - Index 0: Left Elbow Angle
+    - Index 1: Right Elbow Angle
+    - Index 2: Left Shoulder Angle
+    - Index 3: Right Shoulder Angle
+    - Index 4: Left Body Angle
+    - Index 5: Right Body Angle
     
     Args:
         p: Probability of applying the flip. Default is 0.5.
     """
     
-    # Pairs of (left_start_idx, right_start_idx) for each landmark pair
-    # Each landmark has 3 values (x, y, z), so we swap in groups of 3
-    LANDMARK_PAIRS = [
-        (0, 3),    # Left/Right Shoulder
-        (6, 9),    # Left/Right Elbow
-        (12, 15),  # Left/Right Wrist
-        (18, 21),  # Left/Right Hip
+    # Pairs of (left_idx, right_idx) for each angle pair
+    ANGLE_PAIRS = [
+        (0, 1),    # Left/Right Elbow
+        (2, 3),    # Left/Right Shoulder
+        (4, 5),    # Left/Right Body
     ]
-    
-    # X-coordinate indices (every 3rd value starting at 0)
-    X_INDICES = [0, 3, 6, 9, 12, 15, 18, 21]
     
     def __init__(self, p: float = 0.5):
         if not 0 <= p <= 1:
             raise ValueError(f"Probability p must be in [0, 1], got {p}")
         self.p = p
     
-    def __call__(self, landmarks: torch.Tensor) -> torch.Tensor:
+    def __call__(self, landmarks: torch.Tensor, label: int) -> tuple[torch.Tensor, int]:
         """Apply random horizontal flip to landmarks.
         
         Args:
-            landmarks: Tensor of shape (T, 24) containing landmark coordinates.
+            landmarks: Tensor of shape (T, 6) containing angle features.
+            label: Integer count.
             
         Returns:
-            Flipped landmarks tensor of the same shape, or original if not flipped.
+            Tuple of (flipped_landmarks, label).
         """
         if torch.rand(1).item() >= self.p:
-            return landmarks
+            return landmarks, label
         
         # Clone to avoid modifying original tensor
         flipped = landmarks.clone()
         
-        # 1. Mirror x-coordinates around center (0.5)
-        # For normalized coordinates in [0, 1], flipped_x = 1 - x
-        for x_idx in self.X_INDICES:
-            flipped[:, x_idx] = 1.0 - flipped[:, x_idx]
+        # Swap left and right angle pairs
+        # Note: Angles are scalars (degrees), so mirroring the image just swaps 
+        # the angle values between left and right sides. No value inversion needed.
+        for left_idx, right_idx in self.ANGLE_PAIRS:
+            temp = flipped[:, left_idx].clone()
+            flipped[:, left_idx] = flipped[:, right_idx]
+            flipped[:, right_idx] = temp
         
-        # 2. Swap left and right landmark pairs
-        for left_start, right_start in self.LANDMARK_PAIRS:
-            # Swap all 3 coordinates (x, y, z) for each pair
-            temp = flipped[:, left_start:left_start+3].clone()
-            flipped[:, left_start:left_start+3] = flipped[:, right_start:right_start+3]
-            flipped[:, right_start:right_start+3] = temp
-        
-        return flipped
+        return flipped, label
+
 
 class RandomTemporalJitter:
     """Randomly subsample frames from the landmark sequence.
@@ -181,21 +175,22 @@ class RandomTemporalJitter:
         self.p = p
         self.drop_ratio = drop_ratio
     
-    def __call__(self, landmarks: torch.Tensor) -> torch.Tensor:
+    def __call__(self, landmarks: torch.Tensor, label: int) -> tuple[torch.Tensor, int]:
         """Apply random temporal jitter to landmarks.
         
         Args:
-            landmarks: Tensor of shape (T, 24) containing landmark coordinates.
+            landmarks: Tensor of shape (T, 6) containing angle features.
+            label: Integer count.
             
         Returns:
-            Jittered landmarks tensor of shape (T', 24) where T' <= T.
+            Tuple of (jittered_landmarks, label).
         """
         if torch.rand(1).item() >= self.p:
-            return landmarks
+            return landmarks, label
         
         T = landmarks.shape[0]
         if T <= 2:  # Don't jitter very short sequences
-            return landmarks
+            return landmarks, label
         
         # Randomly determine how many frames to keep
         keep_ratio = torch.empty(1).uniform_(self.drop_ratio[0], self.drop_ratio[1]).item()
@@ -204,7 +199,8 @@ class RandomTemporalJitter:
         # Randomly select frame indices (sorted to maintain temporal order)
         indices = torch.randperm(T)[:num_keep].sort().values
         
-        return landmarks[indices]
+        return landmarks[indices], label
+
 
 class RandomNoise:
     """Add random Gaussian noise to landmark coordinates.
@@ -226,18 +222,154 @@ class RandomNoise:
         self.p = p
         self.std = std
     
-    def __call__(self, landmarks: torch.Tensor) -> torch.Tensor:
+    def __call__(self, landmarks: torch.Tensor, label: int) -> tuple[torch.Tensor, int]:
         """Apply random Gaussian noise to landmarks.
         
         Args:
-            landmarks: Tensor of shape (T, 24) containing landmark coordinates.
+            landmarks: Tensor of shape (T, 6) containing angle features.
+            label: Integer count.
             
         Returns:
-            Noisy landmarks tensor of the same shape.
+            Tuple of (noisy_landmarks, label).
         """
         if torch.rand(1).item() >= self.p:
-            return landmarks
+            return landmarks, label
         
         # Add Gaussian noise
         noise = torch.randn_like(landmarks) * self.std
-        return landmarks + noise
+        return landmarks + noise, label
+
+
+class RandomTimeWarp:
+    """Resample temporal sequence to simulate speed variations.
+    
+    This transform resamples the sequence to a new length between 0.8x and 1.2x
+    of the original, simulating videos recorded at different speeds or exercises
+    performed at varying paces. Uses linear interpolation to maintain smooth
+    angle transitions.
+    
+    Args:
+        p: Probability of applying the warp. Default is 0.5.
+        scale_range: Tuple of (min_scale, max_scale) for the resampling factor.
+                     Default is (0.8, 1.2).
+    """
+    
+    def __init__(self, p: float = 0.5, scale_range: tuple = (0.8, 1.2)):
+        if not 0 <= p <= 1:
+            raise ValueError(f"Probability p must be in [0, 1], got {p}")
+        if not (0 < scale_range[0] <= scale_range[1]):
+            raise ValueError(f"scale_range must satisfy 0 < min <= max, got {scale_range}")
+        self.p = p
+        self.scale_range = scale_range
+    
+    def __call__(self, landmarks: torch.Tensor, label: int) -> tuple[torch.Tensor, int]:
+        """Apply random time warp to landmarks.
+        
+        Args:
+            landmarks: Tensor of shape (T, 6) containing angle features.
+            label: Integer count.
+            
+        Returns:
+            Tuple of (warped_landmarks, label).
+        """
+        if torch.rand(1).item() >= self.p:
+            return landmarks, label
+        
+        T = landmarks.shape[0]
+        if T <= 2:  # Don't warp very short sequences
+            return landmarks, label
+        
+        # Sample scale factor uniformly from scale_range
+        scale = torch.empty(1).uniform_(self.scale_range[0], self.scale_range[1]).item()
+        T_new = max(2, int(T * scale))
+        
+        # Reshape for F.interpolate: (T, 6) -> (1, 6, T)
+        x = landmarks.T.unsqueeze(0).float()
+        
+        # Interpolate using linear mode
+        x_warped = F.interpolate(x, size=T_new, mode='linear', align_corners=True)
+        
+        # Reshape back: (1, 6, T_new) -> (T_new, 6)
+        return x_warped.squeeze(0).T, label
+
+
+class RandomSequenceReverse:
+    """Randomly reverse the temporal order of the angle sequence.
+    
+    This transform flips the sequence along the time axis, effectively
+    making a push-up motion appear to go in reverse. This is a valid
+    augmentation because:
+    1. The biomechanics of a push-up (descend then ascend) reversed 
+       (ascend then descend) still represents valid motion dynamics.
+    2. It doubles the effective training data variety.
+    
+    Args:
+        p: Probability of applying the reverse. Default is 0.5.
+    """
+    
+    def __init__(self, p: float = 0.5):
+        if not 0 <= p <= 1:
+            raise ValueError(f"Probability p must be in [0, 1], got {p}")
+        self.p = p
+    
+    def __call__(self, landmarks: torch.Tensor, label: int) -> tuple[torch.Tensor, int]:
+        """Apply random sequence reversal.
+        
+        Args:
+            landmarks: Tensor of shape (T, 6) containing angle features.
+            label: Integer count.
+            
+        Returns:
+            Tuple of (reversed_landmarks, label).
+        """
+        if torch.rand(1).item() >= self.p:
+            return landmarks, label
+        
+        # Reverse along the time dimension (dim=0)
+        return torch.flip(landmarks, dims=[0]), label
+
+
+class RandomScaling:
+    """Randomly scale the angle values by a factor.
+    
+    This transform applies a multiplicative scaling to the normalized angle
+    values, simulating variations in range of motion. For example, someone
+    with greater flexibility might achieve larger joint angles during push-ups.
+    
+    Since angles are normalized between 0 and 1, the result is clamped to
+    stay within [0, 1].
+    
+    Args:
+        p: Probability of applying the scaling. Default is 0.5.
+        scale_range: Tuple of (min_scale, max_scale) for the scaling factor.
+                     Default is (0.8, 1.2) for +/- 20% variation.
+    """
+    
+    def __init__(self, p: float = 0.5, scale_range: tuple = (0.8, 1.2)):
+        if not 0 <= p <= 1:
+            raise ValueError(f"Probability p must be in [0, 1], got {p}")
+        if not (0 < scale_range[0] <= scale_range[1]):
+            raise ValueError(f"scale_range must satisfy 0 < min <= max, got {scale_range}")
+        self.p = p
+        self.scale_range = scale_range
+    
+    def __call__(self, landmarks: torch.Tensor, label: int) -> tuple[torch.Tensor, int]:
+        """Apply random scaling to angle values.
+        
+        Args:
+            landmarks: Tensor of shape (T, 6) containing normalized angle features
+                       in the range [0, 1].
+            label: Integer count.
+            
+        Returns:
+            Tuple of (scaled_landmarks, label).
+        """
+        if torch.rand(1).item() >= self.p:
+            return landmarks, label
+        
+        # Sample scale factor uniformly from scale_range
+        scale = torch.empty(1).uniform_(self.scale_range[0], self.scale_range[1]).item()
+        
+        # Apply scaling and clamp to valid range
+        scaled = landmarks * scale
+        return torch.clamp(scaled, 0.0, 1.0), label

@@ -44,7 +44,7 @@ def get_dataloaders(video_dir, batch_size=4, val_split=0.2):
     """
     
     # First, create a dataset without transforms to determine the split indices
-    full_dataset = VideoDataset(video_dir, transform=None)
+    full_dataset = VideoDataset(video_dir)
     
     val_size = int(len(full_dataset) * val_split)
     train_size = len(full_dataset) - val_size
@@ -93,7 +93,6 @@ from count_pushups_heuristic import (
 )
 
 
-
 # %% [markdown] id="3Bou97f8czAu"
 # # Evaluate the Heuristic Model
 #
@@ -118,7 +117,7 @@ def run_heuristic_evaluation(
     search_results = grid_search_parameters(
         train_loader,
         smoothing_windows=[11, 15, 21, 31],
-        min_prominences=[5.0, 10.0, 15.0, 20.0],
+        min_prominences=[0.03, 0.05, 0.08, 0.11],
         min_distances=[5, 10, 15, 20, 30],
     )
     
