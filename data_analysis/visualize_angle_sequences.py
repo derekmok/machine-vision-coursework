@@ -35,7 +35,7 @@ import glob
 import numpy as np
 
 # %%
-CACHE_DIR = ".landmark_cache"
+CACHE_DIR = "../.landmark_cache"
 
 ANGLE_NAMES = [
     "Left Elbow",

@@ -78,7 +78,7 @@ def get_video_metadata(video_path: str) -> dict:
 # ## Inspect All Videos
 
 # %%
-video_dir = './video-data'
+video_dir = '../video-data'
 
 # Get all video files
 video_extensions = ('.mp4', '.avi', '.mov', '.mkv', '.webm')
