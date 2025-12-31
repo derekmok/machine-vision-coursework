@@ -5,15 +5,14 @@ MediaPipe and compute joint angles (elbow, shoulder, and hip angles).
 """
 
 import cv2
+import mediapipe as mp
 import numpy as np
 import torch
-import mediapipe as mp
 from mediapipe.tasks import python as mp_tasks
 from mediapipe.tasks.python import vision
 from mediapipe.tasks.python.vision.pose_landmarker import PoseLandmarkerResult
 from scipy.ndimage import median_filter
 from scipy.signal import savgol_filter
-
 
 # MediaPipe Pose landmark indices
 LEFT_SHOULDER = 11

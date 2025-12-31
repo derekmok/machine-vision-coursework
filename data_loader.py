@@ -2,7 +2,7 @@ import torch
 from torch.utils.data import Dataset
 import os
 
-from pose_feature_extractor import PoseFeatureExtractor
+from feature_engineering.pose_feature_extractor import PoseFeatureExtractor
 
 DEFAULT_MODEL_PATH = ".models/pose_landmarker.task"
 DEFAULT_CACHE_DIR = ".landmark_cache"

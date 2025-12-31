@@ -5,14 +5,13 @@ the cached joint angle features. Use this after modifying the PoseFeatureExtract
 to ensure all cached features are consistent with the new extraction logic.
 """
 
-import os
 import sys
 import argparse
 from pathlib import Path
 from tqdm import tqdm
 import torch
 
-from pose_feature_extractor import PoseFeatureExtractor
+from feature_engineering.pose_feature_extractor import PoseFeatureExtractor
 
 
 DEFAULT_VIDEO_DIR = "video-data"
