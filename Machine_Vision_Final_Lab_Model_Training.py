@@ -184,6 +184,7 @@ def train_model():
 
 # %% colab={"base_uri": "https://localhost:8080/"} id="lHI68u4XhCGB" outputId="c28ba0d4-cb87-4076-eb13-ab93d597ef10"
 # setting a manual seed for reproducibility
+# !mkdir -p .models && wget --no-clobber -O .models/pose_landmarker.task https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_heavy/float16/1/pose_landmarker_heavy.task
 torch.manual_seed(42)
 training_results = train_model()
 
