@@ -249,7 +249,13 @@ class EnsembleTrainer:
                     f"Off1: {val_metrics.off_by_one_accuracy:.1%}"
                 )
         
-        print(f"  Best epoch: {best_epoch + 1}, Val loss: {best_val_loss:.4f}")
+        best_val_metrics = val_history[best_epoch]
+        print(
+            f"  Best epoch: {best_epoch + 1} | "
+            f"Val Loss: {best_val_loss:.4f}, MAE: {best_val_metrics.mean_absolute_error:.2f}, "
+            f"Exact: {best_val_metrics.exact_match_accuracy:.1%}, "
+            f"Off1: {best_val_metrics.off_by_one_accuracy:.1%}"
+        )
         
         return FoldResult(
             fold_index=fold_index,
@@ -284,9 +290,9 @@ class EnsembleTrainer:
             sequences = sequences.to(self.device)
             labels = labels.to(self.device).float()
             
-            predictions = model(sequences)
+            predictions, _ = model(sequences)
             # Scale loss by accumulation steps for proper gradient averaging
-            loss = self.loss_fn(predictions.squeeze(), labels) / self.accumulation_steps
+            loss = self.loss_fn(predictions.squeeze(1), labels) / self.accumulation_steps
             loss.backward()
             
             # Optimizer step after accumulating gradients
@@ -329,8 +335,8 @@ class EnsembleTrainer:
                 sequences = sequences.to(self.device)
                 labels = labels.to(self.device).float()
                 
-                predictions = model(sequences)
-                loss = self.loss_fn(predictions.squeeze(), labels)
+                predictions, _ = model(sequences)
+                loss = self.loss_fn(predictions.squeeze(1), labels)
                 
                 total_loss += loss.item()
                 num_batches += 1

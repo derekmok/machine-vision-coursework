@@ -14,9 +14,9 @@ import torch
 from feature_engineering.pose_feature_extractor import PoseFeatureExtractor
 
 
-DEFAULT_VIDEO_DIR = "video-data"
-DEFAULT_CACHE_DIR = ".landmark_cache"
-DEFAULT_MODEL_PATH = ".models/pose_landmarker.task"
+DEFAULT_VIDEO_DIR = "../video-data"
+DEFAULT_CACHE_DIR = "../.landmark_cache"
+DEFAULT_MODEL_PATH = "../.models/pose_landmarker.task"
 DEFAULT_TARGET_FPS = 30.0
 
 

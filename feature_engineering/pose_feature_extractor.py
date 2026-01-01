@@ -154,7 +154,7 @@ class PoseFeatureExtractor:
         angles_tensor = self._resample_to_target_fps(angles_tensor, source_fps)
         
         # Apply smoothing to reduce noise from pose estimation
-        # angles_tensor = self._smooth_angles(angles_tensor)
+        angles_tensor = self._smooth_angles(angles_tensor)
 
         return angles_tensor
 
@@ -203,7 +203,7 @@ class PoseFeatureExtractor:
         ba = a - b
         bc = c - b
         
-        cos_angle = np.dot(ba, bc) / (np.linalg.norm(ba) * np.linalg.norm(bc) + 1e-8)
+        cos_angle = (ba @ bc) / (np.linalg.norm(ba) * np.linalg.norm(bc) + 1e-8)
         cos_angle = np.clip(cos_angle, -1.0, 1.0)
         angle = np.arccos(cos_angle)
         # Normalize to 0-1 range (angles are 0-180 degrees)

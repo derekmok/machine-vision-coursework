@@ -254,7 +254,7 @@ class RandomTimeWarp:
                      Default is (0.8, 1.2).
     """
     
-    def __init__(self, p: float = 0.5, scale_range: tuple = (0.8, 1.2)):
+    def __init__(self, p: float = 0.5, scale_range: tuple = (0.7, 1.4)):
         if not 0 <= p <= 1:
             raise ValueError(f"Probability p must be in [0, 1], got {p}")
         if not (0 < scale_range[0] <= scale_range[1]):
@@ -345,7 +345,7 @@ class RandomScaling:
                      Default is (0.8, 1.2) for +/- 20% variation.
     """
     
-    def __init__(self, p: float = 0.5, scale_range: tuple = (0.8, 1.2)):
+    def __init__(self, p: float = 0.5, scale_range: tuple = (0.9, 1.1)):
         if not 0 <= p <= 1:
             raise ValueError(f"Probability p must be in [0, 1], got {p}")
         if not (0 < scale_range[0] <= scale_range[1]):
@@ -373,3 +373,51 @@ class RandomScaling:
         # Apply scaling and clamp to valid range
         scaled = landmarks * scale
         return torch.clamp(scaled, 0.0, 1.0), label
+
+
+class RandomDropout:
+    """Randomly set individual angle values to zero (feature-level dropout).
+    
+    This transform randomly zeros out individual angle values in the sequence,
+    which acts as a regularization technique particularly useful for weakly
+    supervised learning where only aggregate counts (not frame-level labels)
+    are available.
+    
+    This simulates real-world pose estimation failures where individual joints
+    may be missed due to occlusion, motion blur, or low confidence detections.
+    
+    By learning to count from incomplete/corrupted sequences, the model becomes
+    more robust and less likely to overfit to spurious patterns.
+    
+    Args:
+        p: Probability of applying dropout. Default is 0.5.
+        dropout_rate: The fraction of individual angle values to zero out.
+                      Default is 0.1 (10% dropout).
+    """
+    
+    def __init__(self, p: float = 0.5, dropout_rate: float = 0.1):
+        if not 0 <= p <= 1:
+            raise ValueError(f"Probability p must be in [0, 1], got {p}")
+        if not 0 <= dropout_rate <= 1:
+            raise ValueError(f"dropout_rate must be in [0, 1], got {dropout_rate}")
+        self.p = p
+        self.dropout_rate = dropout_rate
+    
+    def __call__(self, landmarks: torch.Tensor, label: int) -> tuple[torch.Tensor, int]:
+        """Apply random dropout to landmarks.
+        
+        Args:
+            landmarks: Tensor of shape (T, 6) containing angle features.
+            label: Integer count.
+            
+        Returns:
+            Tuple of (dropped_landmarks, label).
+        """
+        if torch.rand(1).item() >= self.p:
+            return landmarks, label
+        
+        # Create mask for individual features (True = keep, False = zero out)
+        keep_mask = torch.rand_like(landmarks) >= self.dropout_rate
+        
+        # Zero out selected features
+        return landmarks * keep_mask.float(), label

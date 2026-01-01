@@ -8,7 +8,7 @@
 #       format_version: '1.3'
 #       jupytext_version: 1.18.1
 #   kernelspec:
-#     display_name: .venv (3.14.0)
+#     display_name: .venv
 #     language: python
 #     name: python3
 # ---
@@ -116,130 +116,7 @@ print(f"\nTotal: {len(video_names)} files")
 
 # For example, below here we are padding every video to 1,000 frames. That may or may not be a good idea.
 
-
-import torch
-import torch.nn as nn
-from torch.utils.data import Dataset, DataLoader, random_split
-import os
-import cv2
-import numpy as np
-
-
-
-class VideoDataset(Dataset):
-    """Dataset for loading videos from a folder. Labels from filename prefix."""
-
-    def __init__(self, video_dir, frame_size=(224, 224), transform=None):
-        self.video_dir = video_dir
-        self.frame_size = frame_size
-        self.transform = transform
-
-        self.video_files = [
-            f for f in os.listdir(video_dir)
-            if f.endswith(('.mp4', '.avi', '.mov'))
-        ]
-
-        self.labels = [
-            int(f.split('_')[0]) for f in self.video_files
-        ]
-
-    def __len__(self):
-        return len(self.video_files)
-
-    def __getitem__(self, idx):
-        video_path = os.path.join(self.video_dir, self.video_files[idx])
-        frames = self._load_video(video_path)
-        label = self.labels[idx]
-
-        if self.transform:
-            frames = self.transform(frames)
-
-        return frames, label
-
-    def _load_video(self, path):
-        cap = cv2.VideoCapture(path)
-
-        frames = []
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                break
-            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            frame = cv2.resize(frame, (self.frame_size[1], self.frame_size[0]))
-            frames.append(frame)
-
-        cap.release()
-
-        frames = torch.from_numpy(np.array(frames)).permute(3, 0, 1, 2).float() / 255.0
-
-        return frames
-
-
-def collate_fn(batch):
-    """Pad all videos to 1000 frames."""
-    frames_list, labels = zip(*batch)
-
-    target_frames = 1000
-
-    padded_frames = []
-    for frames in frames_list:
-        num_frames = frames.shape[1]
-        if num_frames < target_frames:
-            padding = torch.zeros(frames.shape[0], target_frames - num_frames, frames.shape[2], frames.shape[3])
-            frames = torch.cat([frames, padding], dim=1)
-        elif num_frames > target_frames:
-            frames = frames[:, :target_frames, :, :]
-        padded_frames.append(frames)
-
-    frames_batch = torch.stack(padded_frames, dim=0)
-    labels_batch = torch.tensor(labels)
-
-    return frames_batch, labels_batch
-
-
-def get_dataloaders(video_dir, batch_size=4, val_split=0.2, frame_size=(224, 224)):
-    """Create train and validation dataloaders."""
-
-    full_dataset = VideoDataset(video_dir, frame_size=frame_size)
-
-    val_size = int(len(full_dataset) * val_split)
-    train_size = len(full_dataset) - val_size
-
-    train_dataset, val_dataset = random_split(
-        full_dataset,
-        [train_size, val_size],
-        generator=torch.Generator().manual_seed(42)
-    )
-
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=batch_size,
-        shuffle=True,
-        num_workers=0,
-        collate_fn=collate_fn
-    )
-
-    val_loader = DataLoader(
-        val_dataset,
-        batch_size=batch_size,
-        shuffle=False,
-        num_workers=0,
-        collate_fn=collate_fn
-    )
-
-    print(f"Train: {len(train_dataset)} videos, Val: {len(val_dataset)} videos\n")
-
-    return train_loader, val_loader
-
-
-video_dir = './video-data'
-
-train_loader, val_loader = get_dataloaders(video_dir, batch_size=4, val_split=0.2)
-
-for frames, labels in train_loader:
-    print(f"Frames shape: {frames.shape}")  # (B, C, 1000, H, W)
-    print(f"Labels: {labels}")
-    break
+from data_loader import VideoDataset
 
 # %% [markdown] id="YVPYRadrZdty"
 # # Create a Model
@@ -259,40 +136,10 @@ for frames, labels in train_loader:
 # Create your model.
 
 # %% id="H5FlYz3paNxu"
-
 import torch
 import torch.nn as nn
 from huggingface_hub import HfApi, hf_hub_download
-
-
-class SimpleVideoClassifier(nn.Module):
-    def __init__(self, num_classes=10):
-        super().__init__()
-        # Average over frames, then use a simple CNN
-        self.conv = nn.Sequential(
-            nn.Conv2d(3, 32, 3, padding=1),
-            nn.ReLU(),
-            nn.MaxPool2d(2),
-            nn.Conv2d(32, 64, 3, padding=1),
-            nn.ReLU(),
-            nn.MaxPool2d(2),
-            nn.AdaptiveAvgPool2d((4, 4))
-        )
-        self.fc = nn.Sequential(
-            nn.Linear(64 * 4 * 4, 128),
-            nn.ReLU(),
-            nn.Linear(128, num_classes)
-        )
-
-    def forward(self, x):
-        # x: (B, C, T, H, W)
-        # Average over time dimension
-        x = x.mean(dim=2)  # (B, C, H, W)
-        x = self.conv(x)
-        x = x.view(x.size(0), -1)
-        x = self.fc(x)
-        return x
-
+from temporal_conv_net import TCNPushUpCounter
 
 
 # %% [markdown] id="3Bou97f8czAu"
@@ -309,81 +156,36 @@ class SimpleVideoClassifier(nn.Module):
 
 # %% id="EueH4HSdcLlE"
 import torch.optim as optim
+from ensemble_trainer import EnsembleTrainer
+from feature_engineering.transforms import Compose, RandomTemporalJitter, RandomScaling, RandomNoise, RandomTimeWarp, RandomSequenceReverse, RandomSequenceRepeat, RandomHorizontalFlipLandmarks, RandomDropout
 
 
-def train_epoch(model, train_loader, optimizer, criterion, device):
-    model.train()
-    total_loss = 0
-    correct = 0
-    total = 0
+def train_model():
+    trainer = EnsembleTrainer(
+        model_factory=lambda: TCNPushUpCounter(input_channels=6),
+        loss_fn=nn.L1Loss(),
+        optimizer_factory=lambda parameters : optim.AdamW(parameters),
+        patience=50,
+        max_epochs=500
+    )
 
-    for batch_idx, (data, target) in enumerate(train_loader):
-        data, target = data.to(device), target.to(device)
-
-        optimizer.zero_grad()
-        output = model(data)
-        loss = criterion(output, target)
-        loss.backward()
-        optimizer.step()
-
-        total_loss += loss.item()
-        pred = output.argmax(dim=1)
-        correct += pred.eq(target).sum().item()
-        total += target.size(0)
-
-    return total_loss / len(train_loader), correct / total
-
-
-def evaluate(model, test_loader, criterion, device):
-    model.eval()
-    total_loss = 0
-    correct = 0
-    total = 0
-
-    with torch.no_grad():
-        for data, target in test_loader:
-            data, target = data.to(device), target.to(device)
-            output = model(data)
-            total_loss += criterion(output, target).item()
-            pred = output.argmax(dim=1)
-            correct += pred.eq(target).sum().item()
-            total += target.size(0)
-
-    return total_loss / len(test_loader), correct / total
-
-
-def train_model(epochs=5, lr=1e-3):
-    """Train and return your model."""
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"Using device: {device}\n")
-
-    model = SimpleVideoClassifier().to(device)
-    print("Instantiated model.\n")
-    optimizer = optim.Adam(model.parameters(), lr=lr)
-    criterion = nn.CrossEntropyLoss()
-
-    train_loader, val_loader = get_dataloaders(video_dir='./video-data')
-    print("Got dataloaders.\n")
-
-    print("Go time. Let the training commence.\n")
-
-    for epoch in range(1, epochs + 1):
-
-        train_loss, train_acc = train_epoch(model, train_loader, optimizer, criterion, device)
-        val_loss, val_acc = evaluate(model, val_loader, criterion, device)
-
-        print(f"Epoch {epoch}/{epochs} | "
-              f"Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.4f} | "
-              f"Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.4f}")
-
-    return model
-
-
+    return trainer.train(
+        dataset=VideoDataset("video-data"),
+        train_transform=Compose([
+            RandomSequenceRepeat(),
+            RandomSequenceReverse(),
+            RandomHorizontalFlipLandmarks(),
+            RandomTimeWarp(p=0.8),
+            RandomScaling(),
+            RandomNoise(p=1.0),
+            RandomDropout()
+        ])
+    )
 
 # %% colab={"base_uri": "https://localhost:8080/"} id="lHI68u4XhCGB" outputId="c28ba0d4-cb87-4076-eb13-ab93d597ef10"
 # setting a manual seed for reproducibility
-torch.manual_seed(0)
-model = train_model()
+torch.manual_seed(42)
+training_results = train_model()
 
 # %% [markdown] id="W7gmJS-yn2qc"
 # # Evaluation
@@ -394,7 +196,268 @@ model = train_model()
 # Include any code which you feel is useful for evaluating your model performance below.
 
 # %% id="y1KwRou4oCkj"
-# YOUR CODE HERE
+import matplotlib.pyplot as plt
+
+
+def plot_training_results(results):
+    """Plot training and validation metrics for all folds.
+    
+    Creates a 4x2 grid showing training (left) and validation (right) for:
+    - Loss
+    - Mean Absolute Error
+    - Exact Match Accuracy
+    - Off-by-One Accuracy
+    
+    Args:
+        results: EnsembleResult object from training
+    """
+    fig, axes = plt.subplots(4, 2, figsize=(14, 16))
+    fig.suptitle('Training Results Across Folds', fontsize=14, fontweight='bold')
+    
+    # Column headers
+    axes[0, 0].set_title('Training', fontsize=12, fontweight='bold')
+    axes[0, 1].set_title('Validation', fontsize=12, fontweight='bold')
+    
+    metrics = [
+        ('loss', 'Loss', 0),
+        ('mean_absolute_error', 'Mean Absolute Error', 1),
+        ('exact_match_accuracy', 'Exact Match Accuracy', 2),
+        ('off_by_one_accuracy', 'Off-by-One Accuracy', 3),
+    ]
+    
+    colors = plt.cm.tab10.colors
+    
+    for metric_name, metric_label, row_idx in metrics:
+        train_ax = axes[row_idx, 0]
+        val_ax = axes[row_idx, 1]
+        
+        for fold_result in results.fold_results:
+            fold_idx = fold_result.fold_index
+            color = colors[fold_idx % len(colors)]
+            
+            # Extract metric values from history
+            train_values = [getattr(m, metric_name) for m in fold_result.train_history]
+            val_values = [getattr(m, metric_name) for m in fold_result.val_history]
+            epochs = range(1, len(train_values) + 1)
+            
+            # Plot training metrics (left column)
+            train_ax.plot(epochs, train_values, '-', color=color, 
+                          label=f'Fold {fold_idx + 1}')
+            train_ax.axvline(x=fold_result.best_epoch + 1, color=color, 
+                             linestyle='--', linewidth=2, alpha=0.7)
+            
+            # Plot validation metrics (right column)
+            val_ax.plot(epochs, val_values, '-', color=color, 
+                        label=f'Fold {fold_idx + 1}')
+            val_ax.axvline(x=fold_result.best_epoch + 1, color=color, 
+                           linestyle='--', linewidth=2, alpha=0.7)
+        
+        # Configure training axis
+        train_ax.set_xlabel('Epoch')
+        train_ax.set_ylabel(metric_label)
+        train_ax.grid(True, alpha=0.3)
+        train_ax.legend(fontsize=8, loc='best')
+        
+        # Configure validation axis
+        val_ax.set_xlabel('Epoch')
+        val_ax.set_ylabel(metric_label)
+        val_ax.grid(True, alpha=0.3)
+        val_ax.legend(fontsize=8, loc='best')
+    
+    plt.tight_layout()
+    plt.savefig('training_results.png', dpi=150, bbox_inches='tight')
+    plt.show()
+    print("Training results saved to 'training_results.png'")
+
+
+# Plot the training results
+plot_training_results(training_results)
+
+# %% [markdown]
+# ## Ensemble Evaluation
+#
+# Evaluate the ensemble model on the full training dataset.
+
+# %%
+from ensemble_wrapper import EnsembleWrapper
+from torch.utils.data import DataLoader
+import numpy as np
+
+def create_ensemble_from_results(training_results, input_channels=6):
+    """Create an EnsembleWrapper and load weights from training results.
+    
+    Args:
+        training_results: EnsembleResult from training
+        input_channels: Number of input channels for TCNPushUpCounter
+        
+    Returns:
+        EnsembleWrapper with loaded weights
+    """
+    # Create 5 fresh TCNPushUpCounter instances
+    models = [TCNPushUpCounter(input_channels=input_channels) for _ in range(len(training_results.fold_results))]
+    
+    # Wrap them in an EnsembleWrapper
+    ensemble = EnsembleWrapper(models)
+    
+    # Extract state dicts from training results
+    state_dicts = [fold.model_state_dict for fold in training_results.fold_results]
+    
+    # Load the weights
+    ensemble.load_member_weights(state_dicts)
+    
+    return ensemble
+
+
+def evaluate_ensemble_on_dataset(ensemble, dataset, device=None):
+    """Evaluate ensemble on a dataset and compute statistics.
+    
+    Args:
+        ensemble: EnsembleWrapper model
+        dataset: Dataset to evaluate on
+        device: torch.device (defaults to cuda if available)
+        
+    Returns:
+        Dictionary with predictions, targets, and metrics
+    """
+    if device is None:
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    
+    ensemble = ensemble.to(device)
+    ensemble.eval()
+    
+    all_predictions = []
+    all_targets = []
+    all_density_maps = []
+    
+    loader = DataLoader(dataset, batch_size=1, shuffle=False)
+    
+    with torch.no_grad():
+        for sequences, labels in loader:
+            sequences = sequences.to(device)
+            
+            # Get ensemble predictions
+            predictions, density_maps = ensemble(sequences)
+            
+            all_predictions.append(predictions.cpu().squeeze().item())
+            all_targets.append(labels.item())
+            all_density_maps.append(density_maps.cpu().squeeze().numpy())
+    
+    predictions = np.array(all_predictions)
+    targets = np.array(all_targets)
+    rounded_preds = np.round(predictions)
+    
+    # Compute metrics
+    mae = np.mean(np.abs(predictions - targets))
+    exact_match = np.mean(rounded_preds == targets)
+    off_by_one = np.mean(np.abs(rounded_preds - targets) <= 1)
+    
+    return {
+        'predictions': predictions,
+        'rounded_predictions': rounded_preds,
+        'targets': targets,
+        'density_maps': all_density_maps,
+        'mae': mae,
+        'exact_match_accuracy': exact_match,
+        'off_by_one_accuracy': off_by_one,
+    }
+
+
+def plot_density_maps(results, num_samples=6):
+    """Plot density maps for a handful of samples.
+    
+    Args:
+        results: Dictionary from evaluate_ensemble_on_dataset
+        num_samples: Number of samples to plot
+    """
+    indices = np.linspace(0, len(results['density_maps']) - 1, num_samples, dtype=int)
+    
+    fig, axes = plt.subplots(2, 3, figsize=(14, 8))
+    axes = axes.flatten()
+    
+    for i, idx in enumerate(indices):
+        density_map = results['density_maps'][idx]
+        target = results['targets'][idx]
+        pred = results['predictions'][idx]
+        rounded_pred = results['rounded_predictions'][idx]
+        
+        ax = axes[i]
+        ax.plot(density_map, color='steelblue', linewidth=1.5)
+        ax.fill_between(range(len(density_map)), density_map, alpha=0.3, color='steelblue')
+        ax.set_title(f'Sample {idx + 1}\nTarget: {int(target)}, Pred: {pred:.2f} (→ {int(rounded_pred)})', 
+                     fontsize=10)
+        ax.set_xlabel('Frame')
+        ax.set_ylabel('Density')
+        ax.grid(True, alpha=0.3)
+        ax.set_ylim(bottom=0)
+    
+    fig.suptitle('Ensemble Density Maps', fontsize=14, fontweight='bold')
+    plt.tight_layout()
+    plt.savefig('ensemble_density_maps.png', dpi=150, bbox_inches='tight')
+    plt.show()
+    print("Density maps saved to 'ensemble_density_maps.png'")
+
+
+# Create the ensemble and load weights
+ensemble_model = create_ensemble_from_results(training_results, input_channels=6)
+print(f"Created ensemble with {len(ensemble_model)} models")
+
+# Evaluate on the full training dataset
+dataset = VideoDataset("video-data")
+evaluation_results = evaluate_ensemble_on_dataset(ensemble_model, dataset)
+
+# Print statistics
+print("\n" + "=" * 50)
+print("Ensemble Evaluation Results on Training Set")
+print("=" * 50)
+print(f"Mean Absolute Error:     {evaluation_results['mae']:.4f}")
+print(f"Exact Match Accuracy:    {evaluation_results['exact_match_accuracy']:.2%}")
+print(f"Off-by-One Accuracy:     {evaluation_results['off_by_one_accuracy']:.2%}")
+print("=" * 50)
+
+# Plot density maps for a handful of samples
+plot_density_maps(evaluation_results, num_samples=6)
+
+
+def plot_predicted_vs_true(results):
+    """Plot predicted counts vs true counts.
+    
+    Args:
+        results: Dictionary from evaluate_ensemble_on_dataset
+    """
+    predictions = results['predictions']
+    targets = results['targets']
+    
+    fig, ax = plt.subplots(figsize=(8, 8))
+    
+    # Scatter plot of predictions vs targets
+    ax.scatter(targets, predictions, alpha=0.7, s=80, c='steelblue', edgecolors='white', linewidth=0.5)
+    
+    # Perfect prediction line
+    min_val = min(targets.min(), predictions.min()) - 0.5
+    max_val = max(targets.max(), predictions.max()) + 0.5
+    ax.plot([min_val, max_val], [min_val, max_val], 'k--', linewidth=2, label='Perfect Prediction')
+    
+    # Off-by-one bounds
+    ax.fill_between([min_val, max_val], [min_val - 1, max_val - 1], [min_val + 1, max_val + 1], 
+                    alpha=0.15, color='green', label='±1 Tolerance')
+    
+    ax.set_xlabel('True Count', fontsize=12)
+    ax.set_ylabel('Predicted Count', fontsize=12)
+    ax.set_title('Ensemble: Predicted vs True Push-Up Counts', fontsize=14, fontweight='bold')
+    ax.set_xlim(min_val, max_val)
+    ax.set_ylim(min_val, max_val)
+    ax.set_aspect('equal')
+    ax.grid(True, alpha=0.3)
+    ax.legend(loc='upper left')
+    
+    plt.tight_layout()
+    plt.savefig('predicted_vs_true.png', dpi=150, bbox_inches='tight')
+    plt.show()
+    print("Plot saved to 'predicted_vs_true.png'")
+
+
+# Plot predicted vs true counts
+plot_predicted_vs_true(evaluation_results)
 
 # %% [markdown] id="eAmXb-QC2ChR"
 # # Hugging Face
@@ -482,4 +545,3 @@ if __name__ == "__main__":
     save_model(model, "mv-final-assignment.pt")
 
     upload_to_hub("mv-final-assignment.pt", f"{hf_username}/mv-final-assignment")
-
