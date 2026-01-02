@@ -8,11 +8,13 @@ comprehensive metrics tracking.
 from dataclasses import dataclass
 from typing import Callable, Optional
 import copy
+import time
 
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader, Subset
 from sklearn.model_selection import KFold
+from tqdm.auto import tqdm
 
 from data_loader import TransformDataset
 
@@ -35,6 +37,7 @@ class FoldResult:
     val_history: list[FoldMetrics]
     best_epoch: int
     best_val_loss: float
+    training_time_seconds: float
 
 
 @dataclass
@@ -42,6 +45,22 @@ class EnsembleResult:
     """Results from training the complete ensemble."""
     fold_results: list[FoldResult]
     k: int
+    total_training_time_seconds: float
+
+
+def _format_duration(seconds: float) -> str:
+    """Format a duration in seconds to a human-readable string."""
+    if seconds < 60:
+        return f"{seconds:.1f}s"
+    elif seconds < 3600:
+        minutes = int(seconds // 60)
+        secs = seconds % 60
+        return f"{minutes}m {secs:.0f}s"
+    else:
+        hours = int(seconds // 3600)
+        minutes = int((seconds % 3600) // 60)
+        secs = seconds % 60
+        return f"{hours}h {minutes}m {secs:.0f}s"
 
 
 class EarlyStopping:
@@ -88,8 +107,7 @@ class EarlyStopping:
 class EnsembleTrainer:
     """K-fold cross-validation ensemble trainer.
     
-    Uses batch_size=1 with gradient accumulation to avoid padding issues
-    with variable-length sequences while maintaining stable training.
+    Uses batch_size=1 to avoid padding issues with variable-length sequences.
     
     Args:
         model_factory: Callable that returns a fresh model instance
@@ -99,11 +117,6 @@ class EnsembleTrainer:
         device: torch.device to use for training
         patience: Early stopping patience (epochs)
         max_epochs: Maximum training epochs per fold
-        accumulation_steps: Number of steps to accumulate gradients before
-            performing an optimizer step (default 16)
-        prediction_extractor: Callable that extracts the prediction tensor from
-            model output. Default extracts the first element (for models returning
-            (predictions, ...) tuples)
     """
     
     def __init__(
@@ -115,8 +128,6 @@ class EnsembleTrainer:
         device: Optional[torch.device] = None,
         patience: int = 10,
         max_epochs: int = 100,
-        accumulation_steps: int = 16,
-        prediction_extractor: Optional[Callable] = None,
     ):
         self.model_factory = model_factory
         self.loss_fn = loss_fn
@@ -129,35 +140,43 @@ class EnsembleTrainer:
         )
         self.patience = patience
         self.max_epochs = max_epochs
-        self.accumulation_steps = accumulation_steps
-        self.prediction_extractor = prediction_extractor or (lambda output: output[0])
     
     def train(
         self,
         dataset: Dataset,
         train_transform: Optional[Callable] = None,
         num_workers: int = 0,
+        verbose_batches: bool = False,
     ) -> EnsembleResult:
         """Train the ensemble using k-fold cross-validation.
         
-        Always uses batch_size=1 with gradient accumulation to avoid padding
-        issues with variable-length sequences.
+        Always uses batch_size=1 to avoid padding issues with variable-length sequences.
         
         Args:
             dataset: PyTorch Dataset (without augmentation transforms)
             train_transform: Transform to apply to training data (augmentations)
             num_workers: Number of workers for DataLoaders
+            verbose_batches: If True, show progress bars for batches within epochs
             
         Returns:
             EnsembleResult containing all fold results
         """
+        overall_start_time = time.time()
         kfold = KFold(n_splits=self.k, shuffle=True, random_state=42)
         fold_results = []
         
-        for fold_idx, (train_indices, val_indices) in enumerate(kfold.split(dataset)):
-            print(f"\n{'='*50}")
-            print(f"Fold {fold_idx + 1}/{self.k}")
-            print(f"{'='*50}")
+        # Create progress bar for folds
+        fold_splits = list(kfold.split(dataset))
+        fold_pbar = tqdm(
+            enumerate(fold_splits),
+            total=self.k,
+            desc="Training Folds",
+            unit="fold",
+            leave=True,
+        )
+        
+        for fold_idx, (train_indices, val_indices) in fold_pbar:
+            fold_pbar.set_description(f"Fold {fold_idx + 1}/{self.k}")
             
             # Create subsets
             train_subset = Subset(dataset, train_indices)
@@ -181,18 +200,48 @@ class EnsembleTrainer:
             )
             
             # Train this fold
-            fold_result = self._train_fold(fold_idx, train_loader, val_loader)
+            fold_result = self._train_fold(
+                fold_idx, train_loader, val_loader, verbose_batches
+            )
             fold_results.append(fold_result)
+            
+            # Update fold progress bar with results
+            best_metrics = fold_result.val_history[fold_result.best_epoch]
+            fold_pbar.set_postfix({
+                "time": _format_duration(fold_result.training_time_seconds),
+                "best_epoch": fold_result.best_epoch + 1,
+                "val_loss": f"{fold_result.best_val_loss:.4f}",
+                "exact": f"{best_metrics.exact_match_accuracy:.1%}",
+            })
         
-        return EnsembleResult(fold_results=fold_results, k=self.k)
+        total_training_time = time.time() - overall_start_time
+        
+        # Print training summary
+        print(f"\n{'='*60}")
+        print("Training Complete!")
+        print(f"{'='*60}")
+        print(f"Total time: {_format_duration(total_training_time)}")
+        if fold_results:
+            avg_fold_time = sum(r.training_time_seconds for r in fold_results) / len(fold_results)
+            print(f"Average time per fold: {_format_duration(avg_fold_time)}")
+        print(f"{'='*60}")
+        
+        return EnsembleResult(
+            fold_results=fold_results,
+            k=self.k,
+            total_training_time_seconds=total_training_time,
+        )
     
     def _train_fold(
         self,
         fold_index: int,
         train_loader: DataLoader,
         val_loader: DataLoader,
+        verbose_batches: bool = False,
     ) -> FoldResult:
         """Train a single fold."""
+        fold_start_time = time.time()
+        
         # Create fresh model and optimizer for this fold
         model = self.model_factory().to(self.device)
         optimizer = self.optimizer_factory(model.parameters())
@@ -204,38 +253,57 @@ class EnsembleTrainer:
         best_epoch = 0
         best_val_loss = float('inf')
         
-        for epoch in range(self.max_epochs):
+        # Create tqdm progress bar for epochs
+        epoch_pbar = tqdm(
+            range(self.max_epochs),
+            desc=f"Fold {fold_index + 1}/{self.k}",
+            unit="epoch",
+            leave=True,
+        )
+        
+        for epoch in epoch_pbar:
             # Training epoch
-            train_metrics = self._train_epoch(model, train_loader, optimizer)
+            train_metrics = self._train_epoch(
+                model, train_loader, optimizer, verbose_batches
+            )
             train_history.append(train_metrics)
             
             # Validation epoch
-            val_metrics = self._evaluate(model, val_loader)
+            val_metrics = self._evaluate(model, val_loader, verbose_batches)
             val_history.append(val_metrics)
+            
+            # Update progress bar with current metrics
+            status = ""
+            if early_stopping.is_best():
+                status = "★"
+            epoch_pbar.set_postfix({
+                "val_loss": f"{val_metrics.loss:.4f}",
+                "mae": f"{val_metrics.mean_absolute_error:.2f}",
+                "exact": f"{val_metrics.exact_match_accuracy:.1%}",
+                "status": status,
+            })
             
             # Check for best model
             if early_stopping(val_metrics.loss):
-                print(f"  Early stopping triggered at epoch {epoch + 1}")
+                epoch_pbar.set_postfix({
+                    "val_loss": f"{val_metrics.loss:.4f}",
+                    "mae": f"{val_metrics.mean_absolute_error:.2f}",
+                    "exact": f"{val_metrics.exact_match_accuracy:.1%}",
+                    "status": "early_stop",
+                })
                 break
             
             if early_stopping.is_best():
                 best_model_state = copy.deepcopy(model.state_dict())
                 best_epoch = epoch
                 best_val_loss = val_metrics.loss
-            
-            # Progress logging
-            if (epoch + 1) % 5 == 0 or epoch == 0:
-                print(
-                    f"  Epoch {epoch + 1:3d} | "
-                    f"Train Loss: {train_metrics.loss:.4f}, MAE: {train_metrics.mean_absolute_error:.2f} | "
-                    f"Val Loss: {val_metrics.loss:.4f}, MAE: {val_metrics.mean_absolute_error:.2f}, "
-                    f"Exact: {val_metrics.exact_match_accuracy:.1%}, "
-                    f"Off1: {val_metrics.off_by_one_accuracy:.1%}"
-                )
+        
+        fold_training_time = time.time() - fold_start_time
         
         best_val_metrics = val_history[best_epoch]
         print(
-            f"  Best epoch: {best_epoch + 1} | "
+            f"  Fold {fold_index + 1} complete in {_format_duration(fold_training_time)} | "
+            f"Best epoch: {best_epoch + 1} | "
             f"Val Loss: {best_val_loss:.4f}, MAE: {best_val_metrics.mean_absolute_error:.2f}, "
             f"Exact: {best_val_metrics.exact_match_accuracy:.1%}, "
             f"Off1: {best_val_metrics.off_by_one_accuracy:.1%}"
@@ -248,6 +316,7 @@ class EnsembleTrainer:
             val_history=val_history,
             best_epoch=best_epoch,
             best_val_loss=best_val_loss,
+            training_time_seconds=fold_training_time,
         )
     
     def _train_epoch(
@@ -255,47 +324,35 @@ class EnsembleTrainer:
         model: nn.Module,
         loader: DataLoader,
         optimizer: torch.optim.Optimizer,
+        verbose_batches: bool = False,
     ) -> FoldMetrics:
-        """Run a single training epoch with gradient accumulation.
-        
-        Since we use batch_size=1, gradients are accumulated over
-        `self.accumulation_steps` before performing an optimizer step.
-        """
+        """Run a single training epoch."""
         model.train()
         all_predictions = []
         all_targets = []
         total_loss = 0.0
         num_samples = 0
         
-        optimizer.zero_grad()
+        batch_iter = loader
+        if verbose_batches:
+            batch_iter = tqdm(loader, desc="  Training", leave=False, unit="batch")
         
-        for step, batch in enumerate(loader):
+        for batch in batch_iter:
             sequences, density_map, labels, _ = batch
             sequences = sequences.to(self.device)
             density_map = density_map.to(self.device)
             labels = labels.to(self.device).float()
             
-            
+            optimizer.zero_grad()
             prediction, predicted_density_map = model(sequences)
-            # Scale loss by accumulation steps for proper gradient averaging
-            loss = self.loss_fn(predicted_density_map, density_map, labels) / self.accumulation_steps
+            loss = self.loss_fn(predicted_density_map, density_map, labels)
             loss.backward()
+            optimizer.step()
             
-            # Optimizer step after accumulating gradients
-            if (step + 1) % self.accumulation_steps == 0:
-                optimizer.step()
-                optimizer.zero_grad()
-            
-            # Track unscaled loss for metrics
-            total_loss += loss.item() * self.accumulation_steps
+            total_loss += loss.item()
             num_samples += 1
             all_predictions.append(prediction.detach().cpu())
             all_targets.append(labels.detach().cpu())
-        
-        # Handle remaining gradients if dataset size isn't divisible by accumulation_steps
-        if num_samples % self.accumulation_steps != 0:
-            optimizer.step()
-            optimizer.zero_grad()
         
         all_predictions = torch.cat(all_predictions)
         all_targets = torch.cat(all_targets)
@@ -307,6 +364,7 @@ class EnsembleTrainer:
         self,
         model: nn.Module,
         loader: DataLoader,
+        verbose_batches: bool = False,
     ) -> FoldMetrics:
         """Evaluate model on a dataset."""
         model.eval()
@@ -315,10 +373,15 @@ class EnsembleTrainer:
         total_loss = 0.0
         num_batches = 0
         
+        batch_iter = loader
+        if verbose_batches:
+            batch_iter = tqdm(loader, desc="  Validating", leave=False, unit="batch")
+        
         with torch.no_grad():
-            for batch in loader:
+            for batch in batch_iter:
                 sequences, density_map, labels, _ = batch
                 sequences = sequences.to(self.device)
+                density_map = density_map.to(self.device)
                 labels = labels.to(self.device).float()
                 
                 total_count, predicted_map = model(sequences)

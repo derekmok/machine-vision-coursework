@@ -167,8 +167,7 @@ def train_model():
         loss_fn=KLDivergenceDensityLoss(lambda_count=1e-1),
         optimizer_factory=lambda parameters : optim.AdamW(parameters),
         patience=100,
-        max_epochs=1000,
-        accumulation_steps=1
+        max_epochs=1000
     )
 
     return trainer.train(
