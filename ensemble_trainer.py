@@ -95,12 +95,12 @@ class TransformDataset(Dataset):
         return len(self.dataset)
     
     def __getitem__(self, idx):
-        sequence, label = self.dataset[idx]
+        sequence, density_map, label, length = self.dataset[idx]
         
         if self.transform is not None:
-            sequence, label = self.transform(sequence, label)
+            sequence, density_map, label, length = self.transform(sequence, density_map, label, length)
         
-        return sequence, label
+        return sequence, density_map, label, length
 
 
 class EnsembleTrainer:
@@ -119,6 +119,9 @@ class EnsembleTrainer:
         max_epochs: Maximum training epochs per fold
         accumulation_steps: Number of steps to accumulate gradients before
             performing an optimizer step (default 16)
+        prediction_extractor: Callable that extracts the prediction tensor from
+            model output. Default extracts the first element (for models returning
+            (predictions, ...) tuples)
     """
     
     def __init__(
@@ -131,6 +134,7 @@ class EnsembleTrainer:
         patience: int = 10,
         max_epochs: int = 100,
         accumulation_steps: int = 16,
+        prediction_extractor: Optional[Callable] = None,
     ):
         self.model_factory = model_factory
         self.loss_fn = loss_fn
@@ -144,6 +148,7 @@ class EnsembleTrainer:
         self.patience = patience
         self.max_epochs = max_epochs
         self.accumulation_steps = accumulation_steps
+        self.prediction_extractor = prediction_extractor or (lambda output: output[0])
     
     def train(
         self,
@@ -286,13 +291,15 @@ class EnsembleTrainer:
         optimizer.zero_grad()
         
         for step, batch in enumerate(loader):
-            sequences, labels = batch
+            sequences, density_map, labels, _ = batch
             sequences = sequences.to(self.device)
+            density_map = density_map.to(self.device)
             labels = labels.to(self.device).float()
             
-            predictions, _ = model(sequences)
+            
+            prediction, predicted_density_map = model(sequences)
             # Scale loss by accumulation steps for proper gradient averaging
-            loss = self.loss_fn(predictions.squeeze(1), labels) / self.accumulation_steps
+            loss = self.loss_fn(predicted_density_map, density_map, labels) / self.accumulation_steps
             loss.backward()
             
             # Optimizer step after accumulating gradients
@@ -303,7 +310,7 @@ class EnsembleTrainer:
             # Track unscaled loss for metrics
             total_loss += loss.item() * self.accumulation_steps
             num_samples += 1
-            all_predictions.append(predictions.detach().cpu())
+            all_predictions.append(prediction.detach().cpu())
             all_targets.append(labels.detach().cpu())
         
         # Handle remaining gradients if dataset size isn't divisible by accumulation_steps
@@ -331,16 +338,16 @@ class EnsembleTrainer:
         
         with torch.no_grad():
             for batch in loader:
-                sequences, labels = batch
+                sequences, density_map, labels, _ = batch
                 sequences = sequences.to(self.device)
                 labels = labels.to(self.device).float()
                 
-                predictions, _ = model(sequences)
-                loss = self.loss_fn(predictions.squeeze(1), labels)
+                total_count, predicted_map = model(sequences)
+                loss = self.loss_fn(predicted_map, density_map, labels)
                 
                 total_loss += loss.item()
                 num_batches += 1
-                all_predictions.append(predictions.cpu())
+                all_predictions.append(total_count.cpu())
                 all_targets.append(labels.cpu())
         
         all_predictions = torch.cat(all_predictions)

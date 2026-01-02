@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 
 class TCNPushUpCounter(nn.Module):
-    def __init__(self, input_channels, hidden_channels=16):
+    def __init__(self, input_channels=6, hidden_channels=16):
         super(TCNPushUpCounter, self).__init__()
         
         # Layer 1: Local features (Receptive Field: 5 frames)

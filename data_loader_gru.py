@@ -35,22 +35,17 @@ class VideoDataset(Dataset):
         
         if os.path.exists(cache_path):
             cache_data = torch.load(cache_path, weights_only=True)
-            landmarks_sequence = cache_data['angles']
-            density_map = cache_data['density_map']
+            landmarks_sequence = cache_data
         else:
             print(f"Extracting poses (pose detection) for: {video_filename}")
             video_path = os.path.join(self.video_dir, video_filename)
-            landmarks_sequence, density_map = self.feature_extractor.extract_joint_angles(video_path)
+            landmarks_sequence = self.feature_extractor.extract_joint_angles(video_path)
             print(f"Pose detection complete for: {video_filename}")
-            cache_data = {
-                'angles': landmarks_sequence,
-                'density_map': density_map,
-            }
-            torch.save(cache_data, cache_path)
+            torch.save(landmarks_sequence, cache_path)
 
         label = self.labels[idx]
 
-        return landmarks_sequence, density_map, label, len(landmarks_sequence)
+        return landmarks_sequence, label
 
 
     def _get_cache_path(self, video_filename):

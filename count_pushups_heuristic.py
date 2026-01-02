@@ -46,6 +46,7 @@ class HeuristicPushupCounter:
         poly_order: int = 3,
         min_prominence: float = 0.02,
         min_distance: int = 10,
+        skip_smoothing: bool = False,
     ):
         """Initialize the heuristic push-up counter.
         
@@ -60,6 +61,8 @@ class HeuristicPushupCounter:
             min_distance: Minimum number of frames between detected peaks.
                 Set based on the fastest expected push-up speed. At 30fps,
                 a distance of 10 means at most 3 push-ups per second.
+            skip_smoothing: If True, skip the Savitzky-Golay smoothing step.
+                Use this when the input sequence is already pre-smoothed.
         """
         if smoothing_window % 2 == 0:
             raise ValueError("smoothing_window must be odd")
@@ -70,6 +73,7 @@ class HeuristicPushupCounter:
         self.poly_order = poly_order
         self.min_prominence = min_prominence
         self.min_distance = min_distance
+        self.skip_smoothing = skip_smoothing
     
     def extract_signal(self, landmarks: np.ndarray) -> np.ndarray:
         """Extract the primary push-up signal from angle features.
@@ -103,12 +107,18 @@ class HeuristicPushupCounter:
         it better preserves peak shapes and locations, which is critical for
         accurate peak detection.
         
+        If skip_smoothing is True, returns the signal unchanged.
+        
         Args:
             signal: 1D numpy array of the raw signal.
             
         Returns:
             1D numpy array of the smoothed signal (same length as input).
         """
+        # Skip smoothing if already pre-smoothed
+        if self.skip_smoothing:
+            return signal
+            
         # Handle edge case where signal is shorter than window
         if len(signal) < self.smoothing_window:
             # Fall back to simple padding or return as-is
@@ -317,7 +327,7 @@ def evaluate_on_dataset(
     predictions = []
     labels = []
     
-    for batch_landmarks, batch_labels, batch_lengths in data_loader:
+    for batch_landmarks, _, batch_labels, batch_lengths in data_loader:
         for i in range(len(batch_labels)):
             length = batch_lengths[i].item()
             landmarks = batch_landmarks[i, :length].numpy()

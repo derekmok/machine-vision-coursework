@@ -11,19 +11,12 @@ from pathlib import Path
 from tqdm import tqdm
 import torch
 
-# Add project root to path for imports
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
 from feature_engineering.pose_feature_extractor import PoseFeatureExtractor
 
 
-# Paths relative to the script's location
-_SCRIPT_DIR = Path(__file__).parent
-_PROJECT_ROOT = _SCRIPT_DIR.parent
-
-DEFAULT_VIDEO_DIR = str(_PROJECT_ROOT / "video-data")
-DEFAULT_CACHE_DIR = str(_PROJECT_ROOT / ".landmark_cache")
-DEFAULT_MODEL_PATH = str(_PROJECT_ROOT / ".models" / "pose_landmarker.task")
+DEFAULT_VIDEO_DIR = "../video-data"
+DEFAULT_CACHE_DIR = "../.landmark_cache"
+DEFAULT_MODEL_PATH = "../.models/pose_landmarker.task"
 DEFAULT_TARGET_FPS = 30.0
 
 
@@ -89,15 +82,11 @@ def regenerate_cache(
             continue
         
         try:
-            # Extract joint angles and density map
-            angles_tensor, density_map = extractor.extract_joint_angles(str(video_path))
+            # Extract joint angles
+            angles_tensor = extractor.extract_joint_angles(str(video_path))
             
-            # Save to cache as a dict containing both tensors
-            cache_data = {
-                'angles': angles_tensor,
-                'density_map': density_map,
-            }
-            torch.save(cache_data, cache_path)
+            # Save to cache
+            torch.save(angles_tensor, cache_path)
             processed += 1
             
         except Exception as e:

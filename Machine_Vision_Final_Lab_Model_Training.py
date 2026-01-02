@@ -140,6 +140,7 @@ import torch
 import torch.nn as nn
 from huggingface_hub import HfApi, hf_hub_download
 from temporal_conv_net import TCNPushUpCounter
+from gru import GRUPushUpCounter
 
 
 # %% [markdown] id="3Bou97f8czAu"
@@ -157,16 +158,18 @@ from temporal_conv_net import TCNPushUpCounter
 # %% id="EueH4HSdcLlE"
 import torch.optim as optim
 from ensemble_trainer import EnsembleTrainer
-from feature_engineering.transforms import Compose, RandomTemporalJitter, RandomScaling, RandomNoise, RandomTimeWarp, RandomSequenceReverse, RandomSequenceRepeat, RandomHorizontalFlipLandmarks, RandomDropout
+from feature_engineering.transforms import Compose, RandomScaling, RandomNoise, RandomTimeWarp, RandomSequenceReverse, RandomSequenceRepeat, RandomHorizontalFlipLandmarks, RandomDropout
+from tcn_psuedo_label_loss import PseudoLabelLoss
+from kl_divergence_loss import KLDivergenceDensityLoss
 
 
 def train_model():
     trainer = EnsembleTrainer(
-        model_factory=lambda: TCNPushUpCounter(input_channels=6),
-        loss_fn=nn.L1Loss(),
+        model_factory=lambda: TCNPushUpCounter(),
+        loss_fn=KLDivergenceDensityLoss(lambda_count=1e-1),
         optimizer_factory=lambda parameters : optim.AdamW(parameters),
-        patience=50,
-        max_epochs=500
+        patience=100,
+        max_epochs=1000,
     )
 
     return trainer.train(
@@ -333,7 +336,7 @@ def evaluate_ensemble_on_dataset(ensemble, dataset, device=None):
     loader = DataLoader(dataset, batch_size=1, shuffle=False)
     
     with torch.no_grad():
-        for sequences, labels in loader:
+        for sequences, density_maps, labels, _ in loader:
             sequences = sequences.to(device)
             
             # Get ensemble predictions
@@ -494,7 +497,7 @@ plot_predicted_vs_true(evaluation_results)
 
 # %% id="lCq_stTaoeQW"
 # YOUR HUGGING FACE USERNAME BELOW
-hf_username = 'rossamurphy'
+hf_username = 'derekmok'
 
 # %% id="_AdQof5XtWfS"
 import torch

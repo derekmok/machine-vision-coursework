@@ -14,8 +14,6 @@ from mediapipe.tasks.python.vision.pose_landmarker import PoseLandmarkerResult
 from scipy.ndimage import median_filter
 from scipy.signal import savgol_filter
 
-from count_pushups_heuristic import HeuristicPushupCounter
-
 # MediaPipe Pose landmark indices
 LEFT_SHOULDER = 11
 RIGHT_SHOULDER = 12
@@ -164,10 +162,7 @@ class PoseFeatureExtractor:
         # Apply smoothing to reduce noise from pose estimation
         angles_tensor = self._smooth_angles(angles_tensor)
         
-        # Compute gaussian density map from detected push-up positions
-        density_map = self._compute_density_map(angles_tensor)
-
-        return angles_tensor, density_map
+        return angles_tensor
 
     def _smooth_angles(self, angles_tensor):
         """Apply two-stage smoothing to angle sequences.
@@ -198,65 +193,6 @@ class PoseFeatureExtractor:
         angles_np = savgol_filter(angles_np, window_length=5, polyorder=2, axis=0)
         
         return torch.tensor(angles_np, dtype=torch.float32)
-
-    def _compute_density_map(self, angles_tensor):
-        """Compute a gaussian density map from detected push-up positions.
-        
-        Uses HeuristicPushupCounter from count_pushups_heuristic.py to detect
-        push-up valleys (bottom positions) and creates a gaussian density map
-        over the sequence. This provides a soft target for regression that
-        encodes the temporal location of push-ups.
-        
-        Signal Processing Parameters (optimized via grid search):
-            - smoothing_window: 21 frames
-            - poly_order: 3 (cubic polynomial)
-            - min_prominence: 0.11 (for normalized 0-1 angles)
-            - min_distance: 5 frames
-        
-        Args:
-            angles_tensor: Tensor of shape (T, 6) containing normalized angle features.
-            
-        Returns:
-            Tensor of shape (T,) containing the gaussian density map, where values
-            are higher near detected push-up positions.
-        """
-        # Signal processing parameters (optimized for this task)
-        # skip_smoothing=True because angles_tensor is already smoothed by _smooth_angles
-        counter = HeuristicPushupCounter(
-            smoothing_window=21,
-            poly_order=3,
-            min_prominence=0.11,
-            min_distance=5,
-            skip_smoothing=True,
-        )
-        
-        num_frames = len(angles_tensor)
-        
-        # Handle edge case: sequence too short for processing
-        if num_frames < counter.smoothing_window:
-            return torch.zeros(num_frames, dtype=torch.float32)
-        
-        # Use the counter's debug method to get detected valleys
-        debug_info = counter.count_pushups_with_debug(angles_tensor)
-        valleys = debug_info['valleys']
-        
-        # Create gaussian density map
-        density_map = np.zeros(num_frames, dtype=np.float32)
-        
-        if len(valleys) > 0:
-            # Gaussian sigma: spread based on expected push-up duration
-            # At 30 FPS with min_distance=5, sigma of ~3 provides reasonable coverage
-            sigma = 3.0
-            
-            # Create gaussian bump at each valley position
-            # Each Gaussian is normalized to sum to 1, so the total sum equals the count
-            frame_indices = np.arange(num_frames)
-            for valley_idx in valleys:
-                gaussian = np.exp(-0.5 * ((frame_indices - valley_idx) / sigma) ** 2)
-                gaussian = gaussian / gaussian.sum()  # Normalize so this bump sums to 1
-                density_map += gaussian
-        
-        return torch.tensor(density_map, dtype=torch.float32)
 
     @staticmethod
     def _compute_angle(a, b, c):

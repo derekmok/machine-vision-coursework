@@ -234,3 +234,4 @@ video-data/**
 *.iml
 .ipynb_checkpoints
 .landmark_cache_unsmoothed
+.landmark_cache_smoothed_angles_only

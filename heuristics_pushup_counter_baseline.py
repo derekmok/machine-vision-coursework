@@ -181,7 +181,7 @@ def visualize_sample_detections(video_dir: str = './video-data', num_samples: in
         axes = [axes]
     
     for i in range(min(num_samples, len(dataset))):
-        landmarks, label, _ = dataset[i]
+        landmarks, _, label, _ = dataset[i]
         counter.plot_debug(
             landmarks, 
             title=f"Video {i+1} (Ground Truth: {label} push-ups)",
