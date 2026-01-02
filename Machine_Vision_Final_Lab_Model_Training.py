@@ -111,12 +111,8 @@ print(f"\nTotal: {len(video_names)} files")
 # If you complete this TODO, to maintain experimental hygiene, feel free to modify the code which was provided for TODOs 1 and 2.
 
 # %% colab={"base_uri": "https://localhost:8080/"} id="TvqxH1YBYCUw" outputId="e27c4b8f-b316-4313-d7bd-3cf63602e428"
-# Here is a basic implementation of the above two TODOs. You can assume the first TODO is completed correctly.
-
-# Please modify this code to suit you best, as you decide on your preferred model architecture.
-
-# For example, below here we are padding every video to 1,000 frames. That may or may not be a good idea.
-
+# Dataset is implemented in "data_loader.py"
+# Dataloaders are created in neural_net/ensemble_trainer.py
 from data_loader import VideoDataset
 
 # %% [markdown] id="YVPYRadrZdty"
@@ -137,7 +133,8 @@ from data_loader import VideoDataset
 # Create your model.
 
 # %% id="H5FlYz3paNxu"
-import torch
+# The model is implemented in the "neural_net/temporal_conv_net.py"
+# and "neural_net/ensemble_wrapper.py"
 from neural_net.temporal_conv_net import TCNPushUpCounter
 
 
@@ -283,6 +280,7 @@ plot_training_results(training_results)
 # %%
 from neural_net.ensemble_wrapper import EnsembleWrapper
 from torch.utils.data import DataLoader
+import pandas as pd
 import numpy as np
 
 def create_ensemble_from_results(training_results, input_channels=6):
@@ -361,6 +359,34 @@ def evaluate_ensemble_on_dataset(ensemble, dataset, device=None):
     }
 
 
+# Create the ensemble and load weights
+model = create_ensemble_from_results(training_results, input_channels=6)
+print(f"Created ensemble with {len(model)} models")
+
+# Evaluate on the full training dataset
+dataset = VideoDataset("video-data")
+evaluation_results = evaluate_ensemble_on_dataset(model, dataset)
+
+# Create a summary of evaluation results
+metrics_df = pd.DataFrame({
+    'Metric': [
+        'Mean Absolute Error',
+        'Exact Match Accuracy',
+        'Off-by-One Accuracy'
+    ],
+    'Value': [
+        f"{evaluation_results['mae']:.4f}",
+        f"{evaluation_results['exact_match_accuracy']:.2%}",
+        f"{evaluation_results['off_by_one_accuracy']:.2%}"
+    ]
+})
+
+print()
+print("Ensemble Evaluation Results on Training Set")
+metrics_df.style.hide(axis='index')
+
+
+# %%
 def plot_density_maps(results, num_samples=6):
     """Plot density maps for a handful of samples.
     
@@ -396,27 +422,11 @@ def plot_density_maps(results, num_samples=6):
     print("Density maps saved to 'ensemble_density_maps.png'")
 
 
-# Create the ensemble and load weights
-model = create_ensemble_from_results(training_results, input_channels=6)
-print(f"Created ensemble with {len(model)} models")
-
-# Evaluate on the full training dataset
-dataset = VideoDataset("video-data")
-evaluation_results = evaluate_ensemble_on_dataset(model, dataset)
-
-# Print statistics
-print("\n" + "=" * 50)
-print("Ensemble Evaluation Results on Training Set")
-print("=" * 50)
-print(f"Mean Absolute Error:     {evaluation_results['mae']:.4f}")
-print(f"Exact Match Accuracy:    {evaluation_results['exact_match_accuracy']:.2%}")
-print(f"Off-by-One Accuracy:     {evaluation_results['off_by_one_accuracy']:.2%}")
-print("=" * 50)
-
 # Plot density maps for a handful of samples
 plot_density_maps(evaluation_results, num_samples=6)
 
 
+# %%
 def plot_predicted_vs_true(results):
     """Plot predicted counts vs true counts.
     

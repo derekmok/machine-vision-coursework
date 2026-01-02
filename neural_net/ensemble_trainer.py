@@ -161,7 +161,11 @@ class EnsembleTrainer:
         """
         overall_start_time = time.time()
         print(f"Training on device: {self.device}")
-        print("Note that the first epoch of the first fold will take a long time to train as we run pose detection on every video (takes up to 30 minutes). Once poses are detected and features are cached, subsequent epochs will be much faster.")
+        print()
+        print("Note that the first epoch of the first fold will take a long time to train")
+        print("as we run pose detection on every video (takes up to 30 minutes).")
+        print("Once poses are detected and features are cached, subsequent epochs will be much faster.")
+        print()
         kfold = KFold(n_splits=self.k, shuffle=True, random_state=42)
         fold_results = []
         
