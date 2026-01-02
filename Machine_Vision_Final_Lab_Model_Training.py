@@ -28,12 +28,13 @@
 
 # %% [markdown] id="4YhoE1nF2Pee"
 # The data for this assignment has been made available and is downloadable to disk by running the below cell.
+#
+# import os
 
 # %% colab={"base_uri": "https://localhost:8080/"} id="B5ekP01hR9VV" outputId="b7db6f1a-0f78-422e-9410-527901fdc226"
 import boto3
 from botocore import UNSIGNED
 from botocore.config import Config
-import os
 
 # Connect to S3 without authentication (public bucket)
 s3 = boto3.client('s3', config=Config(signature_version=UNSIGNED))
@@ -137,10 +138,7 @@ from data_loader import VideoDataset
 
 # %% id="H5FlYz3paNxu"
 import torch
-import torch.nn as nn
-from huggingface_hub import HfApi, hf_hub_download
-from temporal_conv_net import TCNPushUpCounter
-from gru import GRUPushUpCounter
+from neural_net.temporal_conv_net import TCNPushUpCounter
 
 
 # %% [markdown] id="3Bou97f8czAu"
@@ -157,10 +155,10 @@ from gru import GRUPushUpCounter
 
 # %% id="EueH4HSdcLlE"
 import torch.optim as optim
-from ensemble_trainer import EnsembleTrainer
-from feature_engineering.transforms import Compose, RandomScaling, RandomNoise, RandomTimeWarp, RandomSequenceReverse, RandomSequenceRepeat, RandomHorizontalFlipLandmarks, RandomDropout
-from tcn_psuedo_label_loss import PseudoLabelLoss
-from kl_divergence_loss import KLDivergenceDensityLoss
+from neural_net.ensemble_trainer import EnsembleTrainer
+from feature_engineering.transforms import Compose, RandomScaling, RandomNoise, RandomTimeWarp, RandomSequenceReverse, \
+    RandomSequenceRepeat, RandomHorizontalFlipLandmarks, RandomDropout
+from neural_net.kl_divergence_loss import KLDivergenceDensityLoss
 
 
 def train_model():
@@ -217,57 +215,57 @@ def plot_training_results(results):
     """
     fig, axes = plt.subplots(4, 2, figsize=(14, 16))
     fig.suptitle('Training Results Across Folds', fontsize=14, fontweight='bold')
-    
+
     # Column headers
     axes[0, 0].set_title('Training', fontsize=12, fontweight='bold')
     axes[0, 1].set_title('Validation', fontsize=12, fontweight='bold')
-    
+
     metrics = [
         ('loss', 'Loss', 0),
         ('mean_absolute_error', 'Mean Absolute Error', 1),
         ('exact_match_accuracy', 'Exact Match Accuracy', 2),
         ('off_by_one_accuracy', 'Off-by-One Accuracy', 3),
     ]
-    
+
     colors = plt.cm.tab10.colors
-    
+
     for metric_name, metric_label, row_idx in metrics:
         train_ax = axes[row_idx, 0]
         val_ax = axes[row_idx, 1]
-        
+
         for fold_result in results.fold_results:
             fold_idx = fold_result.fold_index
             color = colors[fold_idx % len(colors)]
-            
+
             # Extract metric values from history
             train_values = [getattr(m, metric_name) for m in fold_result.train_history]
             val_values = [getattr(m, metric_name) for m in fold_result.val_history]
             epochs = range(1, len(train_values) + 1)
-            
+
             # Plot training metrics (left column)
-            train_ax.plot(epochs, train_values, '-', color=color, 
+            train_ax.plot(epochs, train_values, '-', color=color,
                           label=f'Fold {fold_idx + 1}')
-            train_ax.axvline(x=fold_result.best_epoch + 1, color=color, 
+            train_ax.axvline(x=fold_result.best_epoch + 1, color=color,
                              linestyle='--', linewidth=2, alpha=0.7)
-            
+
             # Plot validation metrics (right column)
-            val_ax.plot(epochs, val_values, '-', color=color, 
+            val_ax.plot(epochs, val_values, '-', color=color,
                         label=f'Fold {fold_idx + 1}')
-            val_ax.axvline(x=fold_result.best_epoch + 1, color=color, 
+            val_ax.axvline(x=fold_result.best_epoch + 1, color=color,
                            linestyle='--', linewidth=2, alpha=0.7)
-        
+
         # Configure training axis
         train_ax.set_xlabel('Epoch')
         train_ax.set_ylabel(metric_label)
         train_ax.grid(True, alpha=0.3)
         train_ax.legend(fontsize=8, loc='best')
-        
+
         # Configure validation axis
         val_ax.set_xlabel('Epoch')
         val_ax.set_ylabel(metric_label)
         val_ax.grid(True, alpha=0.3)
         val_ax.legend(fontsize=8, loc='best')
-    
+
     plt.tight_layout()
     plt.savefig('training_results.png', dpi=150, bbox_inches='tight')
     plt.show()
@@ -283,7 +281,7 @@ plot_training_results(training_results)
 # Evaluate the ensemble model on the full training dataset.
 
 # %%
-from ensemble_wrapper import EnsembleWrapper
+from neural_net.ensemble_wrapper import EnsembleWrapper
 from torch.utils.data import DataLoader
 import numpy as np
 
@@ -299,16 +297,13 @@ def create_ensemble_from_results(training_results, input_channels=6):
     """
     # Create 5 fresh TCNPushUpCounter instances
     models = [TCNPushUpCounter(input_channels=input_channels) for _ in range(len(training_results.fold_results))]
-    
-    # Wrap them in an EnsembleWrapper
-    ensemble = EnsembleWrapper(models)
-    
+
     # Extract state dicts from training results
     state_dicts = [fold.model_state_dict for fold in training_results.fold_results]
-    
-    # Load the weights
-    ensemble.load_member_weights(state_dicts)
-    
+
+    # Use the static factory method to create and hydrate the ensemble
+    ensemble = EnsembleWrapper.from_pretrained_models(models, state_dicts)
+
     return ensemble
 
 
@@ -325,36 +320,36 @@ def evaluate_ensemble_on_dataset(ensemble, dataset, device=None):
     """
     if device is None:
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    
+
     ensemble = ensemble.to(device)
     ensemble.eval()
-    
+
     all_predictions = []
     all_targets = []
     all_density_maps = []
-    
+
     loader = DataLoader(dataset, batch_size=1, shuffle=False)
-    
+
     with torch.no_grad():
         for sequences, density_maps, labels, _ in loader:
             sequences = sequences.to(device)
-            
+
             # Get ensemble predictions
             predictions, density_maps = ensemble(sequences)
-            
+
             all_predictions.append(predictions.cpu().squeeze().item())
             all_targets.append(labels.item())
             all_density_maps.append(density_maps.cpu().squeeze().numpy())
-    
+
     predictions = np.array(all_predictions)
     targets = np.array(all_targets)
     rounded_preds = np.round(predictions)
-    
+
     # Compute metrics
     mae = np.mean(np.abs(predictions - targets))
     exact_match = np.mean(rounded_preds == targets)
     off_by_one = np.mean(np.abs(rounded_preds - targets) <= 1)
-    
+
     return {
         'predictions': predictions,
         'rounded_predictions': rounded_preds,
@@ -374,26 +369,26 @@ def plot_density_maps(results, num_samples=6):
         num_samples: Number of samples to plot
     """
     indices = np.linspace(0, len(results['density_maps']) - 1, num_samples, dtype=int)
-    
+
     fig, axes = plt.subplots(2, 3, figsize=(14, 8))
     axes = axes.flatten()
-    
+
     for i, idx in enumerate(indices):
         density_map = results['density_maps'][idx]
         target = results['targets'][idx]
         pred = results['predictions'][idx]
         rounded_pred = results['rounded_predictions'][idx]
-        
+
         ax = axes[i]
         ax.plot(density_map, color='steelblue', linewidth=1.5)
         ax.fill_between(range(len(density_map)), density_map, alpha=0.3, color='steelblue')
-        ax.set_title(f'Sample {idx + 1}\nTarget: {int(target)}, Pred: {pred:.2f} (→ {int(rounded_pred)})', 
+        ax.set_title(f'Sample {idx + 1}\nTarget: {int(target)}, Pred: {pred:.2f} (→ {int(rounded_pred)})',
                      fontsize=10)
         ax.set_xlabel('Frame')
         ax.set_ylabel('Density')
         ax.grid(True, alpha=0.3)
         ax.set_ylim(bottom=0)
-    
+
     fig.suptitle('Ensemble Density Maps', fontsize=14, fontweight='bold')
     plt.tight_layout()
     plt.savefig('ensemble_density_maps.png', dpi=150, bbox_inches='tight')
@@ -430,21 +425,21 @@ def plot_predicted_vs_true(results):
     """
     predictions = results['predictions']
     targets = results['targets']
-    
+
     fig, ax = plt.subplots(figsize=(8, 8))
-    
+
     # Scatter plot of predictions vs targets
     ax.scatter(targets, predictions, alpha=0.7, s=80, c='steelblue', edgecolors='white', linewidth=0.5)
-    
+
     # Perfect prediction line
     min_val = min(targets.min(), predictions.min()) - 0.5
     max_val = max(targets.max(), predictions.max()) + 0.5
     ax.plot([min_val, max_val], [min_val, max_val], 'k--', linewidth=2, label='Perfect Prediction')
-    
+
     # Off-by-one bounds
-    ax.fill_between([min_val, max_val], [min_val - 1, max_val - 1], [min_val + 1, max_val + 1], 
+    ax.fill_between([min_val, max_val], [min_val - 1, max_val - 1], [min_val + 1, max_val + 1],
                     alpha=0.15, color='green', label='±1 Tolerance')
-    
+
     ax.set_xlabel('True Count', fontsize=12)
     ax.set_ylabel('Predicted Count', fontsize=12)
     ax.set_title('Ensemble: Predicted vs True Push-Up Counts', fontsize=14, fontweight='bold')
@@ -453,7 +448,7 @@ def plot_predicted_vs_true(results):
     ax.set_aspect('equal')
     ax.grid(True, alpha=0.3)
     ax.legend(loc='upper left')
-    
+
     plt.tight_layout()
     plt.savefig('predicted_vs_true.png', dpi=150, bbox_inches='tight')
     plt.show()
@@ -501,8 +496,7 @@ hf_username = 'derekmok'
 
 # %% id="_AdQof5XtWfS"
 import torch
-import torch.nn as nn
-from huggingface_hub import HfApi, hf_hub_download
+from huggingface_hub import HfApi
 
 
 def save_model(model, path="model.pt"):

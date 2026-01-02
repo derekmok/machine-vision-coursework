@@ -67,3 +67,44 @@ class EnsembleWrapper(nn.Module):
     def __len__(self) -> int:
         """Return the number of models in the ensemble."""
         return len(self.models)
+    
+    @staticmethod
+    def from_pretrained_models(
+        models: List[nn.Module],
+        state_dicts: List[Dict[str, torch.Tensor]]
+    ) -> 'EnsembleWrapper':
+        """
+        Create an EnsembleWrapper from a list of models and load their weights.
+        
+        This is a generic factory method that can work with any model type.
+        
+        Args:
+            models: A list of nn.Module instances to ensemble together.
+                   All models should have the same input/output signature.
+            state_dicts: A list of state dictionaries to load into the models.
+                        Must have the same length as models.
+        
+        Returns:
+            EnsembleWrapper with models loaded with the provided weights.
+        
+        Raises:
+            ValueError: If the number of models and state_dicts don't match.
+        
+        Example:
+            >>> models = [MyModel() for _ in range(5)]
+            >>> state_dicts = [torch.load(f'model_{i}.pt') for i in range(5)]
+            >>> ensemble = EnsembleWrapper.from_pretrained_models(models, state_dicts)
+        """
+        if len(models) != len(state_dicts):
+            raise ValueError(
+                f"Number of models ({len(models)}) must match number of "
+                f"state_dicts ({len(state_dicts)})"
+            )
+        
+        # Create the ensemble wrapper
+        ensemble = EnsembleWrapper(models)
+        
+        # Load the weights
+        ensemble.load_member_weights(state_dicts)
+        
+        return ensemble
