@@ -2,6 +2,7 @@ import torch
 from torch.utils.data import Dataset
 import os
 from typing import Callable, Optional
+import time
 
 from feature_engineering.pose_feature_extractor import PoseFeatureExtractor
 
@@ -61,10 +62,11 @@ class VideoDataset(Dataset):
             landmarks_sequence = cache_data['angles']
             density_map = cache_data['density_map']
         else:
-            print(f"Extracting poses (pose detection) for: {video_filename}")
+            time_start = time.time()
+            print(f"Extracting features for: {video_filename}")
             video_path = os.path.join(self.video_dir, video_filename)
             landmarks_sequence, density_map = self.feature_extractor.extract_joint_angles(video_path)
-            print(f"Pose detection complete for: {video_filename}")
+            print(f"Features extracted for: {video_filename} in {(time.time() - time_start):.2f}s")
             cache_data = {
                 'angles': landmarks_sequence,
                 'density_map': density_map,
