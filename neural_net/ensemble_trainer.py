@@ -146,7 +146,6 @@ class EnsembleTrainer:
         dataset: Dataset,
         train_transform: Optional[Callable] = None,
         num_workers: int = 0,
-        verbose_batches: bool = False,
     ) -> EnsembleResult:
         """Train the ensemble using k-fold cross-validation.
         
@@ -156,12 +155,13 @@ class EnsembleTrainer:
             dataset: PyTorch Dataset (without augmentation transforms)
             train_transform: Transform to apply to training data (augmentations)
             num_workers: Number of workers for DataLoaders
-            verbose_batches: If True, show progress bars for batches within epochs
             
         Returns:
             EnsembleResult containing all fold results
         """
         overall_start_time = time.time()
+        print(f"Training on device: {self.device}")
+        print("Note that the first epoch of the first fold will take a long time to train as we run pose detection on every video (takes up to 30 minutes). Once poses are detected and features are cached, subsequent epochs will be much faster.")
         kfold = KFold(n_splits=self.k, shuffle=True, random_state=42)
         fold_results = []
         
@@ -201,7 +201,7 @@ class EnsembleTrainer:
             
             # Train this fold
             fold_result = self._train_fold(
-                fold_idx, train_loader, val_loader, verbose_batches
+                fold_idx, train_loader, val_loader
             )
             fold_results.append(fold_result)
             
@@ -237,7 +237,6 @@ class EnsembleTrainer:
         fold_index: int,
         train_loader: DataLoader,
         val_loader: DataLoader,
-        verbose_batches: bool = False,
     ) -> FoldResult:
         """Train a single fold."""
         fold_start_time = time.time()
@@ -264,12 +263,12 @@ class EnsembleTrainer:
         for epoch in epoch_pbar:
             # Training epoch
             train_metrics = self._train_epoch(
-                model, train_loader, optimizer, verbose_batches
+                model, train_loader, optimizer
             )
             train_history.append(train_metrics)
             
             # Validation epoch
-            val_metrics = self._evaluate(model, val_loader, verbose_batches)
+            val_metrics = self._evaluate(model, val_loader)
             val_history.append(val_metrics)
             
             # Update progress bar with current metrics
@@ -324,7 +323,6 @@ class EnsembleTrainer:
         model: nn.Module,
         loader: DataLoader,
         optimizer: torch.optim.Optimizer,
-        verbose_batches: bool = False,
     ) -> FoldMetrics:
         """Run a single training epoch."""
         model.train()
@@ -334,8 +332,6 @@ class EnsembleTrainer:
         num_samples = 0
         
         batch_iter = loader
-        if verbose_batches:
-            batch_iter = tqdm(loader, desc="  Training", leave=False, unit="batch")
         
         for batch in batch_iter:
             sequences, density_map, labels, _ = batch
@@ -364,7 +360,6 @@ class EnsembleTrainer:
         self,
         model: nn.Module,
         loader: DataLoader,
-        verbose_batches: bool = False,
     ) -> FoldMetrics:
         """Evaluate model on a dataset."""
         model.eval()
@@ -374,8 +369,6 @@ class EnsembleTrainer:
         num_batches = 0
         
         batch_iter = loader
-        if verbose_batches:
-            batch_iter = tqdm(loader, desc="  Validating", leave=False, unit="batch")
         
         with torch.no_grad():
             for batch in batch_iter:

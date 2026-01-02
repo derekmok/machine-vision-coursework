@@ -32,6 +32,7 @@
 # import os
 
 # %% colab={"base_uri": "https://localhost:8080/"} id="B5ekP01hR9VV" outputId="b7db6f1a-0f78-422e-9410-527901fdc226"
+import os
 import boto3
 from botocore import UNSIGNED
 from botocore.config import Config
@@ -397,12 +398,12 @@ def plot_density_maps(results, num_samples=6):
 
 
 # Create the ensemble and load weights
-ensemble_model = create_ensemble_from_results(training_results, input_channels=6)
-print(f"Created ensemble with {len(ensemble_model)} models")
+model = create_ensemble_from_results(training_results, input_channels=6)
+print(f"Created ensemble with {len(model)} models")
 
 # Evaluate on the full training dataset
 dataset = VideoDataset("video-data")
-evaluation_results = evaluate_ensemble_on_dataset(ensemble_model, dataset)
+evaluation_results = evaluate_ensemble_on_dataset(model, dataset)
 
 # Print statistics
 print("\n" + "=" * 50)
