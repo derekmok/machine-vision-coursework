@@ -38,7 +38,7 @@ class PoseFeatureExtractor:
     - Left and right body angles (shoulder-hip-knee)
     """
     
-    def __init__(self, model_path, target_fps=30.0):
+    def __init__(self, model_path, target_fps=30.0, compute_density_map=True):
         """Initialize the pose feature extractor.
         
         Args:
@@ -46,9 +46,13 @@ class PoseFeatureExtractor:
             target_fps: Target frame rate for output sequences. All videos will
                 be resampled to this frame rate to ensure consistent temporal
                 resolution regardless of source video frame rate. Default is 30 FPS.
+            compute_density_map: Whether to compute the density map. Set to False
+                for inference to skip the heuristic-based pseudo-label generation.
+                Default is True.
         """
         self.model_path = model_path
         self.target_fps = target_fps
+        self.compute_density_map_flag = compute_density_map
     
     def _resample_to_target_fps(self, angles_tensor, source_fps):
         """Resample the angle sequence to match the target frame rate.
@@ -165,7 +169,10 @@ class PoseFeatureExtractor:
         angles_tensor = self._smooth_angles(angles_tensor)
         
         # Compute gaussian density map from detected push-up positions
-        density_map = self._compute_density_map(angles_tensor)
+        if self.compute_density_map_flag:
+            density_map = self._compute_density_map(angles_tensor)
+        else:
+            density_map = torch.zeros(len(angles_tensor), dtype=torch.float32)
 
         return angles_tensor, density_map
 

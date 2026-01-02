@@ -34,10 +34,10 @@ class TransformDataset(Dataset):
 class VideoDataset(Dataset):
     """Dataset for loading videos from a folder. Labels from filename prefix."""
 
-    def __init__(self, video_dir, media_pipe_model_path=DEFAULT_MODEL_PATH, cache_dir=DEFAULT_CACHE_DIR):
+    def __init__(self, video_dir, media_pipe_model_path=DEFAULT_MODEL_PATH, cache_dir=DEFAULT_CACHE_DIR, compute_density_map=True):
         self.video_dir = video_dir
         self.cache_dir = cache_dir
-        self.feature_extractor = PoseFeatureExtractor(media_pipe_model_path)
+        self.feature_extractor = PoseFeatureExtractor(media_pipe_model_path, compute_density_map=compute_density_map)
         
         os.makedirs(self.cache_dir, exist_ok=True)
 
