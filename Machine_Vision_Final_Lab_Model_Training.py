@@ -168,6 +168,7 @@ def train_model():
         optimizer_factory=lambda parameters : optim.AdamW(parameters),
         patience=100,
         max_epochs=1000,
+        accumulation_steps=1
     )
 
     return trainer.train(

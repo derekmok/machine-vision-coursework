@@ -261,7 +261,17 @@ class RandomTimeWarp:
         d_warped = F.interpolate(d, size=T_new, mode='linear', align_corners=True)
         
         # Reshape back: (1, 6, T_new) -> (T_new, 6), (1, 1, T_new) -> (T_new,)
-        return x_warped.squeeze(0).T, d_warped.squeeze(0).squeeze(0), label, T_new
+        x_warped = x_warped.squeeze(0).T
+        d_warped = d_warped.squeeze(0).squeeze(0)
+        
+        # Renormalize density map sum to match original sum
+        # Interpolation changes the area under the curve; we must preserving the total count mass
+        current_sum = d_warped.sum()
+        if current_sum > 1e-6:
+            original_sum = density_map.sum()
+            d_warped = d_warped * (original_sum / current_sum)
+            
+        return x_warped, d_warped, label, T_new
 
 
 class RandomSequenceReverse:
