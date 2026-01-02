@@ -29,7 +29,6 @@
 # %% [markdown] id="4YhoE1nF2Pee"
 # The data for this assignment has been made available and is downloadable to disk by running the below cell.
 #
-# import os
 
 # %% colab={"base_uri": "https://localhost:8080/"} id="B5ekP01hR9VV" outputId="b7db6f1a-0f78-422e-9410-527901fdc226"
 import os
