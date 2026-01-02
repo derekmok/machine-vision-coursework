@@ -151,6 +151,7 @@ from neural_net.temporal_conv_net import TCNPushUpCounter
 # The below should just be used as an example to get you started.
 
 # %% id="EueH4HSdcLlE"
+import torch
 import torch.optim as optim
 from neural_net.ensemble_trainer import EnsembleTrainer
 from feature_engineering.transforms import Compose, RandomScaling, RandomNoise, RandomTimeWarp, RandomSequenceReverse, \
