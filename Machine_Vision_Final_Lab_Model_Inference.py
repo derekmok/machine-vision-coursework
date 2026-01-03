@@ -226,7 +226,7 @@ def run_inference(model, bucket_name='training-and-validation-data'):
 
     # Warmup (optional, helps get consistent GPU timings)
     if device.type == 'cuda':
-        dummy = torch.randn(1, 3, 1000, 224, 224).to(device)
+        dummy = torch.randn(1, 1000, 6).to(device)
         with torch.no_grad():
             _ = model(dummy)
         torch.cuda.synchronize()
