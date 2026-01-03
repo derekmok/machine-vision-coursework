@@ -30,7 +30,7 @@ from torch.utils.data import DataLoader
 
 from data_loader import VideoDataset
 
-def get_dataloaders(video_dir, batch_size=4, val_split=0.2):
+def get_dataloaders(video_dir, batch_size=1, val_split=0.2):
     """Create train and validation dataloaders for landmark sequences.
     
     Args:

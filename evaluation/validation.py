@@ -47,7 +47,7 @@ def evaluate_on_validation_data(
         return None
     
     # Load the validation dataset (skip density map computation for inference)
-    val_dataset = VideoDataset(validation_dir, compute_density_map=False, cache_dir=".validation-cache")
+    val_dataset = VideoDataset(validation_dir, is_inference=True, cache_dir=".validation-cache")
     
     if len(val_dataset) == 0:
         print("No videos found in validation directory.")
@@ -63,13 +63,14 @@ def evaluate_on_validation_data(
     val_loader = DataLoader(val_dataset, batch_size=1, shuffle=False)
     
     with torch.no_grad():
-        for i, (sequences, _, labels, seq_len) in enumerate(val_loader):
+        for i, (sequences, labels) in enumerate(val_loader):
             video_filename = val_dataset.video_files[i]
             
             # Extract true label from first character of filename
             true_count = int(video_filename[0])
             
             sequences = sequences.to(device)
+            seq_len = sequences.shape[1]  # Derive sequence length from tensor shape
             
             # Get ensemble predictions
             pred_count, density_map = ensemble(sequences)
@@ -87,7 +88,7 @@ def evaluate_on_validation_data(
                 'is_correct': is_correct,
                 'density_map': density_map,
                 'angles': sequences.cpu().squeeze().numpy(),
-                'seq_len': seq_len.item(),
+                'seq_len': seq_len,
             })
     
     return results

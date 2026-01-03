@@ -8,7 +8,7 @@
 #       format_version: '1.3'
 #       jupytext_version: 1.18.1
 #   kernelspec:
-#     display_name: .venv (3.14.0)
+#     display_name: .venv
 #     language: python
 #     name: python3
 # ---
@@ -176,7 +176,10 @@ def evaluate(model, test_loader, dataset, device):
             inference_time = (end_time - start_time) * 1000  # ms
             all_times.append(inference_time)
 
-            preds = outputs.argmax(dim=1)
+            # For regression: model returns (count, density_map) tuple
+            # Extract the count prediction (first element) and round to integer
+            count_predictions = outputs[0]  # shape: [batch, 1]
+            preds = torch.round(count_predictions.squeeze(-1)).long()  # shape: [batch]
 
             for i in range(labels.size(0)):
                 batch_idx = idx * test_loader.batch_size + i
@@ -211,7 +214,7 @@ def run_inference(model, bucket_name='training-and-validation-data'):
     model = model.to(device)
 
     # Create dataloader
-    test_dataset = VideoDataset(test_dir, compute_density_map=False)
+    test_dataset = VideoDataset(test_dir, is_inference=True)
     test_loader = DataLoader(
         test_dataset,
         batch_size=1,

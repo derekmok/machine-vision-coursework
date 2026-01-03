@@ -32,12 +32,22 @@ class TransformDataset(Dataset):
         return sequence, density_map, label, length
 
 class VideoDataset(Dataset):
-    """Dataset for loading videos from a folder. Labels from filename prefix."""
+    """Dataset for loading videos from a folder. Labels from filename prefix.
+    
+    Args:
+        video_dir: Directory containing video files
+        media_pipe_model_path: Path to MediaPipe pose model
+        cache_dir: Directory to cache extracted features
+        is_inference: If True, returns only (landmarks_sequence, label) for inference.
+                     If False, returns (landmarks_sequence, density_map, label, length) for training.
+    """
 
-    def __init__(self, video_dir, media_pipe_model_path=DEFAULT_MODEL_PATH, cache_dir=DEFAULT_CACHE_DIR, compute_density_map=True):
+    def __init__(self, video_dir, media_pipe_model_path=DEFAULT_MODEL_PATH, cache_dir=DEFAULT_CACHE_DIR, is_inference=False):
         self.video_dir = video_dir
         self.cache_dir = cache_dir
-        self.feature_extractor = PoseFeatureExtractor(media_pipe_model_path, compute_density_map=compute_density_map)
+        self.is_inference = is_inference
+        # Skip density map computation during inference for efficiency
+        self.feature_extractor = PoseFeatureExtractor(media_pipe_model_path, compute_density_map=not is_inference)
         
         os.makedirs(self.cache_dir, exist_ok=True)
 
@@ -60,7 +70,7 @@ class VideoDataset(Dataset):
         if os.path.exists(cache_path):
             cache_data = torch.load(cache_path, weights_only=True)
             landmarks_sequence = cache_data['angles']
-            density_map = cache_data['density_map']
+            density_map = cache_data.get('density_map')
         else:
             time_start = time.time()
             print(f"Extracting features for: {video_filename}")
@@ -75,6 +85,8 @@ class VideoDataset(Dataset):
 
         label = self.labels[idx]
 
+        if self.is_inference:
+            return landmarks_sequence, label
         return landmarks_sequence, density_map, label, len(landmarks_sequence)
 
 
