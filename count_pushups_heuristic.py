@@ -5,10 +5,12 @@ This module provides a baseline push-up counting approach using classical signal
 processing techniques. It serves as a comparison baseline for deep learning approaches.
 
 Key Approach:
-1. Extract elbow angle as a 1D time series (whichever elbow has more movement)
-2. Apply Savitzky-Golay smoothing to reduce noise
-3. Detect peaks/valleys using scipy's find_peaks
-4. Count complete push-up cycles
+1. Extract the primary elbow angle signal from the raw landmarks (whichever elbow has more movement).
+2. Apply a two-stage smoothing process to the landmark sequence:
+   - Stage 1: Median filter to remove outliers and spikes from pose detection failures.
+   - Stage 2: Savitzky-Golay filter to smooth jitter while preserving local peaks.
+3. Detect peaks/valleys on the smoothed version of the extracted signal.
+4. Count push-ups based on the number of detected valleys (bottom positions).
 """
 
 from dataclasses import dataclass
@@ -17,9 +19,11 @@ from typing import Optional
 import itertools
 import matplotlib.pyplot as plt
 import numpy as np
+import torch
 from scipy.ndimage import median_filter
 from scipy.signal import savgol_filter, find_peaks
 from tqdm.auto import tqdm
+from feature_engineering.constants import LEFT_ELBOW_ANGLE_IDX, RIGHT_ELBOW_ANGLE_IDX
 
 
 @dataclass
@@ -84,49 +88,17 @@ class HeuristicPushupCounter:
     
     The key insight is that during a push-up, the elbow angle oscillates
     periodically. By tracking the elbow angle with more movement and
-    detecting the peaks (or valleys) in this signal, we can count push-ups.
-    
-    Attributes:
-        smoothing_window: Window size for Savitzky-Golay filter (must be odd)
-        poly_order: Polynomial order for Savitzky-Golay smoothing
-        min_prominence: Minimum prominence for peak detection (filters noise)
-        min_distance: Minimum frames between peaks (prevents double-counting)
-        median_filter_size: Kernel size for median filter to remove outliers (must be odd)
+    detecting the valleys in this signal, we can count push-ups.
     """
-    
-    # Angle feature indices in the 6-dimensional feature vector from data_loader.py
-    # Format: [left_elbow, right_elbow, left_shoulder, right_shoulder, 
-    #          left_body, right_body]
-    LEFT_ELBOW_ANGLE_IDX = 0
-    RIGHT_ELBOW_ANGLE_IDX = 1
-    
-    def __init__(
-        self,
-        params: HeuristicParameters,
-        skip_smoothing: bool = False,
-    ):
-        """Initialize the heuristic push-up counter.
-        
-        Args:
-            params: HeuristicParameters object containing algorithm configuration.
-            skip_smoothing: If True, skip all smoothing steps.
-                Use this when the input sequence is already pre-smoothed.
-        """
-        if params.smoothing_window % 2 == 0:
-            raise ValueError("smoothing_window must be odd")
-        if params.poly_order >= params.smoothing_window:
-            raise ValueError("poly_order must be less than smoothing_window")
-        if params.median_filter_size % 2 == 0:
-            raise ValueError("median_filter_size must be odd")
-            
+
+    def __init__(self, params: HeuristicParameters):
         self.smoothing_window = params.smoothing_window
         self.poly_order = params.poly_order
         self.min_prominence = params.min_prominence
         self.min_distance = params.min_distance
         self.median_filter_size = params.median_filter_size
-        self.skip_smoothing = skip_smoothing
-    
-    def extract_signal(self, landmarks: np.ndarray) -> tuple[np.ndarray, int]:
+
+    def _extract_signal(self, landmarks: np.ndarray) -> tuple[np.ndarray, int]:
         """Extract the primary push-up signal from angle features.
         
         Uses the elbow angle with more movement (higher range) as the primary signal.
@@ -142,27 +114,22 @@ class HeuristicPushupCounter:
             - elbow_index: Index of the elbow used (0=left, 1=right). Caller can use this
               to extract the raw signal from the original input landmarks.
         """
-        left_elbow_angle = landmarks[:, self.LEFT_ELBOW_ANGLE_IDX]
-        right_elbow_angle = landmarks[:, self.RIGHT_ELBOW_ANGLE_IDX]
-        
-        # Select the elbow with more movement (higher range)
-        left_range = np.ptp(left_elbow_angle)  # peak-to-peak (max - min)
+        left_elbow_angle = landmarks[:, LEFT_ELBOW_ANGLE_IDX]
+        right_elbow_angle = landmarks[:, RIGHT_ELBOW_ANGLE_IDX]
+
+        left_range = np.ptp(left_elbow_angle)
         right_range = np.ptp(right_elbow_angle)
         
         if left_range >= right_range:
-            return left_elbow_angle, self.LEFT_ELBOW_ANGLE_IDX
+            return left_elbow_angle, LEFT_ELBOW_ANGLE_IDX
         else:
-            return right_elbow_angle, self.RIGHT_ELBOW_ANGLE_IDX
+            return right_elbow_angle, RIGHT_ELBOW_ANGLE_IDX
     
-    def smooth_landmarks(self, landmarks: np.ndarray) -> np.ndarray:
+    def _smooth_landmarks(self, landmarks: np.ndarray) -> np.ndarray:
         """Apply two-stage smoothing to the entire landmarks sequence.
         
-        Stage 1: Median filter removes outliers/spikes from pose detection
-                 failures or incorrect landmark positions.
-        Stage 2: Savitzky-Golay filter smooths high-frequency jitter while
-                 preserving signal peaks and timing (zero phase lag).
-        
-        If skip_smoothing is True, returns the landmarks unchanged.
+        1. Median filter removes outliers/spikes from pose detection failures or incorrect landmark positions.
+        2. Savitzky-Golay filter smooths high-frequency jitter while preserving signal peaks and timing.
         
         Args:
             landmarks: Numpy array of shape (T, 6) containing angle features.
@@ -170,28 +137,18 @@ class HeuristicPushupCounter:
         Returns:
             Numpy array of shape (T, 6) with smoothed angle features.
         """
-        # Skip smoothing if already pre-smoothed
-        if self.skip_smoothing:
-            return landmarks
-            
-        # Handle edge case where sequence is shorter than window
-        if len(landmarks) < self.smoothing_window:
-            return landmarks
-        
-        # Stage 1: Median filter to remove outliers along time axis
         smoothed = median_filter(landmarks, size=(self.median_filter_size, 1))
         
-        # Stage 2: Savitzky-Golay filter to smooth jitter along time axis
         smoothed = savgol_filter(smoothed, self.smoothing_window, self.poly_order, axis=0)
         
         return smoothed
     
-    def detect_peaks(self, signal: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    def _detect_peaks(self, signal: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """Detect peaks and valleys in the push-up signal.
         
         In the push-up motion:
-        - Valleys (minima) = bottom position (arms bent, body low)
-        - Peaks (maxima) = top position (arms extended, body high)
+        - Valleys = bottom position (arms bent, body low)
+        - Peaks = top position (arms extended, body high)
         
         We detect valleys by finding peaks in the negated signal.
         
@@ -201,14 +158,12 @@ class HeuristicPushupCounter:
         Returns:
             Tuple of (valleys, peaks) where each is an array of indices.
         """
-        # Find peaks (top position)
         peaks, _ = find_peaks(
             signal,
             prominence=self.min_prominence,
             distance=self.min_distance
         )
         
-        # Find valleys (bottom position) by inverting the signal
         valleys, _ = find_peaks(
             -signal,
             prominence=self.min_prominence,
@@ -217,43 +172,26 @@ class HeuristicPushupCounter:
         
         return valleys, peaks
 
-    def count_pushups(self, landmarks: np.ndarray) -> CountPushupResults:
-        """Count push-ups and return debug information.
+    def count_pushups(self, landmarks: torch.Tensor) -> CountPushupResults:
+        """Count push-ups based on heuristics.
         
         Process:
-        1. Smooth the entire landmarks sequence
-        2. Extract the elbow signal with the most movement from smoothed landmarks
-        3. Detect peaks/valleys on the smoothed signal
-        
-        Note: Zero-padding is not handled because batch_size=1 is used everywhere
-        when processing landmarks, so sequences are never padded.
+        1. Determine which elbow to use based on raw landmarks. This determines the signal we use
+        2. Smooth the entire landmarks sequence
+        3. Detect peaks/valleys on the smoothed version of the selected signal
         
         Args:
-            landmarks: Numpy array of shape (T, 6).
+            landmarks: torch.Tensor of shape (T, 6).
             
         Returns:
-            CountPushupResults dataclass containing:
-                - count: Push-up count
-                - raw_signal: Original extracted signal from input landmarks
-                - smoothed_signal: Signal extracted from smoothed landmarks
-                - valleys: Indices of detected valleys (bottom positions)
-                - peaks: Indices of detected peaks (top positions)
-                - elbow_index: Which elbow was used (0=left, 1=right)
-                - smoothed_landmarks: The smoothed landmarks sequence (T, 6)
+            CountPushupResults See documentation of CountPushupReesults
         """
-        # Convert torch tensor if needed
-        if hasattr(landmarks, 'numpy'):
-            landmarks = landmarks.numpy()
+        landmarks = landmarks.numpy()
+
+        _, elbow_index = self._extract_signal(landmarks)
         
-        # Determine which elbow to use based on RAW landmarks (before smoothing)
-        # This maintains consistency with the original behavior where elbow selection
-        # was based on the unsmoothed signal's movement range
-        _, elbow_index = self.extract_signal(landmarks)
+        smoothed_landmarks = self._smooth_landmarks(landmarks)
         
-        # Smooth the entire landmarks sequence
-        smoothed_landmarks = self.smooth_landmarks(landmarks)
-        
-        # Get signals using the predetermined elbow
         raw_signal = landmarks[:, elbow_index]
         smoothed_signal = smoothed_landmarks[:, elbow_index]
         
@@ -269,7 +207,7 @@ class HeuristicPushupCounter:
             )
         
         # Detect peaks on the smoothed signal
-        valleys, peaks = self.detect_peaks(smoothed_signal)
+        valleys, peaks = self._detect_peaks(smoothed_signal)
         
         return CountPushupResults(
             count=len(valleys),
@@ -281,9 +219,9 @@ class HeuristicPushupCounter:
             smoothed_landmarks=smoothed_landmarks,
         )
     
-    def plot_debug(
+    def plot_pushup_results(
         self, 
-        landmarks: np.ndarray, 
+        landmarks: torch.Tensor, 
         title: str = "Push-up Detection",
         ax: Optional[plt.Axes] = None,
         save_path: Optional[str] = None
@@ -291,7 +229,7 @@ class HeuristicPushupCounter:
         """Plot the signal with detected peaks for visualization.
         
         Args:
-            landmarks: Numpy array of shape (T, 6).
+            landmarks: torch.Tensor of shape (T, 6).
             title: Plot title.
             ax: Optional matplotlib axes to plot on.
             save_path: If provided, save the figure to this path.
@@ -299,42 +237,42 @@ class HeuristicPushupCounter:
         Returns:
             The matplotlib Figure object.
         """
-        debug = self.count_pushups(landmarks)
+        results = self.count_pushups(landmarks)
         
         if ax is None:
             fig, ax = plt.subplots(figsize=(12, 5))
         else:
             fig = ax.get_figure()
             
-        frames = np.arange(len(debug.raw_signal))
+        frames = np.arange(len(results.raw_signal))
         
         # Plot raw signal
-        ax.plot(frames, debug.raw_signal, 'b-', alpha=0.3, label='Raw Signal')
+        ax.plot(frames, results.raw_signal, 'b-', alpha=0.3, label='Raw Signal')
         
         # Plot smoothed signal
-        ax.plot(frames, debug.smoothed_signal, 'b-', linewidth=2, label='Smoothed Signal')
+        ax.plot(frames, results.smoothed_signal, 'b-', linewidth=2, label='Smoothed Signal')
         
         # Mark valleys (bottom positions = push-ups)
-        if len(debug.valleys) > 0:
+        if len(results.valleys) > 0:
             ax.scatter(
-                debug.valleys, 
-                debug.smoothed_signal[debug.valleys], 
+                results.valleys,
+                results.smoothed_signal[results.valleys],
                 c='red', s=100, marker='v', zorder=5,
-                label=f"Valleys (Push-ups: {debug.count})"
+                label=f"Valleys (Push-ups: {results.count})"
             )
         
         # Mark peaks (top positions)
-        if len(debug.peaks) > 0:
+        if len(results.peaks) > 0:
             ax.scatter(
-                debug.peaks, 
-                debug.smoothed_signal[debug.peaks], 
+                results.peaks,
+                results.smoothed_signal[results.peaks],
                 c='green', s=80, marker='^', zorder=5,
                 label='Peaks (Top position)'
             )
         
         ax.set_xlabel('Frame')
         ax.set_ylabel('Elbow Angle (degrees)')
-        ax.set_title(f"{title} - Detected: {debug.count}")
+        ax.set_title(f"{title} - Detected: {results.count}")
         ax.legend()
         ax.grid(True, alpha=0.3)
         
@@ -368,7 +306,7 @@ def evaluate_on_dataset(
     for batch_landmarks, _, batch_labels, batch_lengths in data_loader:
         for i in range(len(batch_labels)):
             length = batch_lengths[i].item()
-            landmarks = batch_landmarks[i, :length].numpy()
+            landmarks = batch_landmarks[i, :length]
             
             pred = counter.count_pushups(landmarks).count
             actual = batch_labels[i].item()

@@ -16,6 +16,14 @@ from mediapipe.tasks.python import vision
 from mediapipe.tasks.python.vision.pose_landmarker import PoseLandmarkerResult
 
 from count_pushups_heuristic import HeuristicParameters, HeuristicPushupCounter
+from feature_engineering.constants import (
+    LEFT_ELBOW_ANGLE_IDX,
+    RIGHT_ELBOW_ANGLE_IDX,
+    LEFT_SHOULDER_ANGLE_IDX,
+    RIGHT_SHOULDER_ANGLE_IDX,
+    LEFT_BODY_ANGLE_IDX,
+    RIGHT_BODY_ANGLE_IDX
+)
 
 # MediaPipe Pose landmark indices
 LEFT_SHOULDER = 11
@@ -169,7 +177,7 @@ class PoseFeatureExtractor:
             landmarker.close()
             cap.release()
 
-        angles_tensor = torch.tensor(angles_list, dtype=torch.float32)
+        angles_tensor = torch.tensor(angles_list, dtype=torch.float64)
         
         # Resample to target frame rate for consistent temporal resolution
         angles_tensor = self._resample_to_target_fps(angles_tensor, source_fps)
@@ -187,13 +195,13 @@ class PoseFeatureExtractor:
         
         # This will smooth the landmarks AND detect peaks/valleys
         pushup_results = counter.count_pushups(angles_tensor)
-        angles_tensor = torch.tensor(pushup_results.smoothed_landmarks, dtype=torch.float32)
+        angles_tensor = torch.tensor(pushup_results.smoothed_landmarks, dtype=torch.float64)
         
         # Compute gaussian density map from detected push-up positions
         if self.compute_density_map_flag:
             density_map = self._generate_gaussian_density_map(pushup_results.valleys, len(angles_tensor))
         else:
-            density_map = torch.zeros(len(angles_tensor), dtype=torch.float32)
+            density_map = torch.zeros(len(angles_tensor), dtype=torch.float64)
 
         return angles_tensor, density_map
 
@@ -222,7 +230,7 @@ class PoseFeatureExtractor:
                 gaussian = gaussian / (gaussian.sum() + 1e-8)  # Normalize so this bump sums to 1
                 density_map += gaussian
         
-        return torch.tensor(density_map, dtype=torch.float32)
+        return torch.tensor(density_map, dtype=torch.float64)
 
     @staticmethod
     def _compute_angle(a, b, c):
@@ -283,14 +291,13 @@ class PoseFeatureExtractor:
             left_body_angle = self._compute_angle(left_shoulder, left_hip, left_knee)
             right_body_angle = self._compute_angle(right_shoulder, right_hip, right_knee)
 
-            frame_angles = [
-                left_elbow_angle,
-                right_elbow_angle,
-                left_shoulder_angle,
-                right_shoulder_angle,
-                left_body_angle,
-                right_body_angle
-            ]
+            frame_angles = [0.0] * 6
+            frame_angles[LEFT_ELBOW_ANGLE_IDX] = left_elbow_angle
+            frame_angles[RIGHT_ELBOW_ANGLE_IDX] = right_elbow_angle
+            frame_angles[LEFT_SHOULDER_ANGLE_IDX] = left_shoulder_angle
+            frame_angles[RIGHT_SHOULDER_ANGLE_IDX] = right_shoulder_angle
+            frame_angles[LEFT_BODY_ANGLE_IDX] = left_body_angle
+            frame_angles[RIGHT_BODY_ANGLE_IDX] = right_body_angle
         else:
             frame_angles = [0.0] * 6
 
