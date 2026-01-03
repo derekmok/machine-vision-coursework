@@ -8,6 +8,8 @@ import cv2
 import mediapipe as mp
 import numpy as np
 import torch
+import os
+import urllib.request
 from mediapipe.tasks import python as mp_tasks
 from mediapipe.tasks.python import vision
 from mediapipe.tasks.python.vision.pose_landmarker import PoseLandmarkerResult
@@ -53,6 +55,16 @@ class PoseFeatureExtractor:
         self.model_path = model_path
         self.target_fps = target_fps
         self.compute_density_map_flag = compute_density_map
+        self._ensure_model_exists()
+    
+    def _ensure_model_exists(self):
+        """Check if the MediaPipe model exists, and download it if not."""
+        if not os.path.exists(self.model_path):
+            print(f"Model not found at {self.model_path}. Downloading...")
+            os.makedirs(os.path.dirname(self.model_path), exist_ok=True)
+            url = "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_heavy/float16/1/pose_landmarker_heavy.task"
+            urllib.request.urlretrieve(url, self.model_path)
+            print(f"Model downloaded successfully to {self.model_path}")
     
     def _resample_to_target_fps(self, angles_tensor, source_fps):
         """Resample the angle sequence to match the target frame rate.

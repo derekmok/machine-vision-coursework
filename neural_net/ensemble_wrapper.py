@@ -50,7 +50,7 @@ class EnsembleWrapper(nn.Module):
         
         return tuple(averaged_outputs)
     
-    def load_member_weights(self, state_dicts: List[Dict[str, torch.Tensor]]) -> None:
+    def _load_member_weights(self, state_dicts: List[Dict[str, torch.Tensor]]) -> None:
         """
         Load weights into each ensemble member from a list of state dictionaries.
         
@@ -105,6 +105,6 @@ class EnsembleWrapper(nn.Module):
         ensemble = EnsembleWrapper(models)
         
         # Load the weights
-        ensemble.load_member_weights(state_dicts)
+        ensemble._load_member_weights(state_dicts)
         
         return ensemble
