@@ -18,9 +18,11 @@
 
 # %% colab={"base_uri": "https://localhost:8080/"} id="bSu3U-SNu8v6" outputId="36cde625-f8f7-4037-b699-67a041775455"
 # ===== INSTALL DEPENDENCIES =====
-# !pip install huggingface_hub
-# !pip install boto3 -q
-# !pip install opencv-python torch numpy torchvision tqdm
+# !git init .
+# !git remote add origin https://github.com/derekmok/machine-vision-coursework.git
+# !git pull origin main
+
+# !pip install -r requirements.txt
 
 # %% id="3Lo27xcqrOMq"
 # Import the required libraries
@@ -60,7 +62,6 @@ hf_username = "derekmok"
 # =============================================================================
 from neural_net.temporal_conv_net import TCNPushUpCounter
 from neural_net.ensemble_wrapper import EnsembleWrapper
-
 
 
 # %% [markdown] id="qahq0xG2rs4h"
@@ -117,7 +118,6 @@ def download_test_data(bucket_name='training-and-validation-data',download_dir='
 from data_loader import VideoDataset
 
 
-
 # %% [markdown] id="B9PVSdWKsP94"
 # ## TODO 3 - Download your model from HuggingFace and instantiate it
 #
@@ -140,7 +140,7 @@ def load_model_from_hub(repo_id, num_classes=10):
     print(f"Model loaded from {repo_id}")
     return model
 
-model = load_model_from_hub(f"{hf_username}/mv-final-assignment",num_classes=10)
+model = load_model_from_hub(f"{hf_username}/mv-final-assignment", num_classes=10)
 
 
 # %% [markdown] id="NycfLBRksum4"
