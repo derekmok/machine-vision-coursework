@@ -16,7 +16,7 @@ from torch.utils.data import Dataset, DataLoader, Subset
 from sklearn.model_selection import KFold
 from tqdm.auto import tqdm
 
-from data_loader import TransformDataset
+from data_loader import TransformDataset, VideoDataset
 
 
 @dataclass
@@ -143,7 +143,7 @@ class EnsembleTrainer:
     
     def train(
         self,
-        dataset: Dataset,
+        video_data_dir: str,
         train_transform: Optional[Callable] = None,
         num_workers: int = 0,
     ) -> EnsembleResult:
@@ -152,13 +152,22 @@ class EnsembleTrainer:
         Always uses batch_size=1 to avoid padding issues with variable-length sequences.
         
         Args:
-            dataset: PyTorch Dataset (without augmentation transforms)
+            video_data_dir: Directory containing video files
             train_transform: Transform to apply to training data (augmentations)
             num_workers: Number of workers for DataLoaders
-            
+
         Returns:
             EnsembleResult containing all fold results
         """
+        # Create the dataset
+        dataset = VideoDataset(
+            video_dir=video_data_dir,
+            feature_processor=lambda features: (
+                features.smoothed_landmarks,
+                features.density_map
+            )
+        )
+        
         overall_start_time = time.time()
         print(f"Training on device: {self.device}")
         print()
@@ -267,9 +276,7 @@ class EnsembleTrainer:
         
         for epoch in epoch_pbar:
             # Training epoch
-            train_metrics = self._train_epoch(
-                model, train_loader, optimizer
-            )
+            train_metrics = self._train_epoch(model, train_loader, optimizer)
             train_history.append(train_metrics)
             
             # Validation epoch
@@ -336,10 +343,8 @@ class EnsembleTrainer:
         total_loss = 0.0
         num_samples = 0
         
-        batch_iter = loader
-        
-        for batch in batch_iter:
-            sequences, density_map, labels, _ = batch
+        for batch in loader:
+            sequences, density_map, labels = batch
             sequences = sequences.to(self.device)
             density_map = density_map.to(self.device)
             labels = labels.to(self.device).float()
@@ -377,7 +382,7 @@ class EnsembleTrainer:
         
         with torch.no_grad():
             for batch in batch_iter:
-                sequences, density_map, labels, _ = batch
+                sequences, density_map, labels = batch
                 sequences = sequences.to(self.device)
                 density_map = density_map.to(self.device)
                 labels = labels.to(self.device).float()

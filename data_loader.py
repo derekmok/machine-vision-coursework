@@ -1,14 +1,13 @@
 import os
-import time
-from typing import Callable
+from typing import Callable, Tuple
 
 import torch
 from torch.utils.data import Dataset
 
-from feature_engineering.pose_feature_extractor import PoseFeatureExtractor
+from feature_engineering.pose_feature_extractor import PoseFeatureExtractor, PoseExtractionResult
 
 DEFAULT_MODEL_PATH = ".models/pose_landmarker.task"
-DEFAULT_CACHE_DIR = ".landmark_cache"
+DEFAULT_CACHE_DIR = ".feature_cache"
 
 
 class TransformDataset(Dataset):
@@ -25,9 +24,9 @@ class TransformDataset(Dataset):
         return len(self.dataset)
     
     def __getitem__(self, idx):
-        sequence, density_map, label, length = self.dataset[idx]
+        sequence, density_map, label = self.dataset[idx]
         
-        return self.transform(sequence, density_map, label, length)
+        return self.transform(sequence, density_map, label)
 
 class VideoDataset(Dataset):
     """Dataset for loading videos from a folder. Labels from filename prefix.
@@ -36,16 +35,23 @@ class VideoDataset(Dataset):
         video_dir: Directory containing video files
         media_pipe_model_path: Path to MediaPipe pose model
         cache_dir: Directory to cache extracted features
-        is_inference: If True, returns only (landmarks_sequence, label) for inference.
-                     If False, returns (landmarks_sequence, density_map, label, length) for training.
+        is_inference: If True, returns only (landmarks_sequence,) for inference.
+                     If False, returns feature_processor output + (label,) for training.
     """
 
-    def __init__(self, video_dir, media_pipe_model_path=DEFAULT_MODEL_PATH, cache_dir=DEFAULT_CACHE_DIR, is_inference=False):
+    def __init__(
+            self,
+            video_dir,
+            feature_processor: Callable[[PoseExtractionResult], Tuple],
+            media_pipe_model_path=DEFAULT_MODEL_PATH,
+            cache_dir=DEFAULT_CACHE_DIR,
+            is_inference=False,
+    ):
         self.video_dir = video_dir
         self.cache_dir = cache_dir
-        self.is_inference = is_inference
         self.feature_extractor = PoseFeatureExtractor(media_pipe_model_path, compute_density_map=not is_inference)
-        
+        self.feature_processor = feature_processor
+
         os.makedirs(self.cache_dir, exist_ok=True)
 
         self.video_files = [
@@ -60,31 +66,26 @@ class VideoDataset(Dataset):
     def __len__(self):
         return len(self.video_files)
 
-    def __getitem__(self, idx):
+    def __getitem__(self, idx: int):
         video_filename = self.video_files[idx]
         cache_path = self._get_cache_path(video_filename)
         
         if os.path.exists(cache_path):
-            cache_data = torch.load(cache_path, weights_only=True)
-            landmarks_sequence = cache_data['angles']
-            density_map = cache_data.get('density_map')
+            result = torch.load(cache_path, weights_only=False)
         else:
             video_path = os.path.join(self.video_dir, video_filename)
-            landmarks_sequence, density_map = self.feature_extractor.extract_features(video_path)
-            cache_data = {
-                'angles': landmarks_sequence,
-                'density_map': density_map,
-            }
-            torch.save(cache_data, cache_path)
+            result = self.feature_extractor.extract(video_path)
+            torch.save(result, cache_path)
 
         label = self.labels[idx]
 
-        if self.is_inference:
-            return landmarks_sequence, label
-
-        return landmarks_sequence, density_map, label, len(landmarks_sequence)
+        return self.feature_processor(result) + (label,)
 
 
     def _get_cache_path(self, video_filename):
         cache_filename = os.path.splitext(video_filename)[0] + '.pt'
         return os.path.join(self.cache_dir, cache_filename)
+
+    @staticmethod
+    def for_inference(video_dir: str) -> 'VideoDataset':
+        return VideoDataset(video_dir, lambda features : (features.smoothed_landmarks,), is_inference=True)

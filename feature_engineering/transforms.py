@@ -13,21 +13,20 @@ class Compose:
     def __init__(self, transforms: list):
         self.transforms = transforms
     
-    def __call__(self, landmarks: torch.Tensor, density_map: torch.Tensor, label: int, length: int) -> tuple[torch.Tensor, torch.Tensor, int, int]:
+    def __call__(self, landmarks: torch.Tensor, density_map: torch.Tensor, label: int) -> tuple[torch.Tensor, torch.Tensor, int]:
         """Apply all transforms in sequence.
         
         Args:
             landmarks: Tensor of shape (T, 6) containing angle features.
             density_map: Tensor of shape (T,) containing gaussian density map.
             label: Integer count.
-            length: Integer sequence length.
             
         Returns:
-            Tuple of (transformed_landmarks, transformed_density_map, label, length).
+            Tuple of (transformed_landmarks, transformed_density_map, label).
         """
         for transform in self.transforms:
-            landmarks, density_map, label, length = transform(landmarks, density_map, label, length)
-        return landmarks, density_map, label, length
+            landmarks, density_map, label = transform(landmarks, density_map, label)
+        return landmarks, density_map, label
 
 
 class RandomSequenceRepeat:
@@ -38,8 +37,8 @@ class RandomSequenceRepeat:
     exercise. For example, a sequence with 2 push-ups repeated twice becomes
     a sequence representing 4 push-ups.
     
-    Note: This transform takes (landmarks, label) as input and returns
-    (new_landmarks, new_label), unlike regular transforms that only modify
+    Note: This transform takes (landmarks, length, label) as input and returns
+    (new_landmarks, new_length, new_label), unlike regular transforms that only modify
     landmarks.
     
     Args:
@@ -60,34 +59,32 @@ class RandomSequenceRepeat:
         self.max_count = max_count
         self.max_repeats = max_repeats
     
-    def __call__(self, landmarks: torch.Tensor, density_map: torch.Tensor, label: int, length: int) -> tuple:
+    def __call__(self, landmarks: torch.Tensor, density_map: torch.Tensor, label: int) -> tuple:
         """Apply random sequence repetition.
         
         Args:
             landmarks: Tensor of shape (T, 6) containing landmark coordinates.
             density_map: Tensor of shape (T,) containing gaussian density map.
             label: Integer count (e.g., number of push-ups).
-            length: Integer sequence length.
             
         Returns:
-            Tuple of (repeated_landmarks, repeated_density_map, new_label, new_length) where:
+            Tuple of (repeated_landmarks, repeated_density_map, new_label) where:
             - repeated_landmarks: Tensor of shape (T * num_repeats, 6)
             - repeated_density_map: Tensor of shape (T * num_repeats,)
             - new_label: Integer = label * num_repeats
-            - new_length: Integer = length * num_repeats
         """
         if torch.rand(1).item() >= self.p:
-            return landmarks, density_map, label, length
+            return landmarks, density_map, label
         
         if label <= 0:
-            return landmarks, density_map, label, length
+            return landmarks, density_map, label
         
         # Calculate maximum allowed repeats based on max_count constraint
         max_allowed_repeats = self.max_count // label
         
         if max_allowed_repeats <= 1:
             # Can't repeat without exceeding max_count
-            return landmarks, density_map, label, length
+            return landmarks, density_map, label
         
         # Cap at max_repeats parameter (total copies, not additional copies)
         max_allowed_repeats = min(max_allowed_repeats, self.max_repeats + 1)
@@ -99,9 +96,8 @@ class RandomSequenceRepeat:
         repeated_landmarks = torch.cat([landmarks] * num_copies, dim=0)
         repeated_density_map = torch.cat([density_map] * num_copies, dim=0)
         new_label = label * num_copies
-        new_length = length * num_copies
         
-        return repeated_landmarks, repeated_density_map, new_label, new_length
+        return repeated_landmarks, repeated_density_map, new_label
 
 
 class RandomHorizontalFlipLandmarks:
@@ -134,21 +130,20 @@ class RandomHorizontalFlipLandmarks:
             raise ValueError(f"Probability p must be in [0, 1], got {p}")
         self.p = p
     
-    def __call__(self, landmarks: torch.Tensor, density_map: torch.Tensor, label: int, length: int) -> tuple[torch.Tensor, torch.Tensor, int, int]:
+    def __call__(self, landmarks: torch.Tensor, density_map: torch.Tensor, label: int) -> tuple[torch.Tensor, torch.Tensor, int]:
         """Apply random horizontal flip to landmarks.
         
         Args:
             landmarks: Tensor of shape (T, 6) containing angle features.
             density_map: Tensor of shape (T,) containing gaussian density map.
             label: Integer count.
-            length: Integer sequence length.
             
         Returns:
-            Tuple of (flipped_landmarks, density_map, label, length).
-            Note: density_map and length are unchanged by horizontal flip.
+            Tuple of (flipped_landmarks, density_map, label).
+            Note: density_map is unchanged by horizontal flip.
         """
         if torch.rand(1).item() >= self.p:
-            return landmarks, density_map, label, length
+            return landmarks, density_map, label
         
         # Clone to avoid modifying original tensor
         flipped = landmarks.clone()
@@ -161,7 +156,7 @@ class RandomHorizontalFlipLandmarks:
             flipped[:, left_idx] = flipped[:, right_idx]
             flipped[:, right_idx] = temp
         
-        return flipped, density_map, label, length
+        return flipped, density_map, label
 
 
 class RandomNoise:
@@ -184,25 +179,24 @@ class RandomNoise:
         self.p = p
         self.std = std
     
-    def __call__(self, landmarks: torch.Tensor, density_map: torch.Tensor, label: int, length: int) -> tuple[torch.Tensor, torch.Tensor, int, int]:
+    def __call__(self, landmarks: torch.Tensor, density_map: torch.Tensor, label: int) -> tuple[torch.Tensor, torch.Tensor, int]:
         """Apply random Gaussian noise to landmarks.
         
         Args:
             landmarks: Tensor of shape (T, 6) containing angle features.
             density_map: Tensor of shape (T,) containing gaussian density map.
             label: Integer count.
-            length: Integer sequence length.
             
         Returns:
-            Tuple of (noisy_landmarks, density_map, label, length).
-            Note: density_map and length are unchanged by noise.
+            Tuple of (noisy_landmarks, density_map, label).
+            Note: density_map is unchanged by noise.
         """
         if torch.rand(1).item() >= self.p:
-            return landmarks, density_map, label, length
+            return landmarks, density_map, label
         
         # Add Gaussian noise
         noise = torch.randn_like(landmarks) * self.std
-        return landmarks + noise, density_map, label, length
+        return landmarks + noise, density_map, label
 
 
 class RandomTimeWarp:
@@ -227,24 +221,23 @@ class RandomTimeWarp:
         self.p = p
         self.scale_range = scale_range
     
-    def __call__(self, landmarks: torch.Tensor, density_map: torch.Tensor, label: int, length: int) -> tuple[torch.Tensor, torch.Tensor, int, int]:
+    def __call__(self, landmarks: torch.Tensor, density_map: torch.Tensor, label: int) -> tuple[torch.Tensor, torch.Tensor, int]:
         """Apply random time warp to landmarks.
         
         Args:
             landmarks: Tensor of shape (T, 6) containing angle features.
             density_map: Tensor of shape (T,) containing gaussian density map.
             label: Integer count.
-            length: Integer sequence length.
             
         Returns:
-            Tuple of (warped_landmarks, warped_density_map, label, new_length).
+            Tuple of (warped_landmarks, warped_density_map, label).
         """
         if torch.rand(1).item() >= self.p:
-            return landmarks, density_map, label, length
+            return landmarks, density_map, label
         
         T = landmarks.shape[0]
         if T <= 2:  # Don't warp very short sequences
-            return landmarks, density_map, label, length
+            return landmarks, density_map, label
         
         # Sample scale factor uniformly from scale_range
         scale = torch.empty(1).uniform_(self.scale_range[0], self.scale_range[1]).item()
@@ -271,7 +264,7 @@ class RandomTimeWarp:
             original_sum = density_map.sum()
             d_warped = d_warped * (original_sum / current_sum)
             
-        return x_warped, d_warped, label, T_new
+        return x_warped, d_warped, label
 
 
 class RandomSequenceReverse:
@@ -293,23 +286,22 @@ class RandomSequenceReverse:
             raise ValueError(f"Probability p must be in [0, 1], got {p}")
         self.p = p
     
-    def __call__(self, landmarks: torch.Tensor, density_map: torch.Tensor, label: int, length: int) -> tuple[torch.Tensor, torch.Tensor, int, int]:
+    def __call__(self, landmarks: torch.Tensor, density_map: torch.Tensor, label: int) -> tuple[torch.Tensor, torch.Tensor, int]:
         """Apply random sequence reversal.
         
         Args:
             landmarks: Tensor of shape (T, 6) containing angle features.
             density_map: Tensor of shape (T,) containing gaussian density map.
             label: Integer count.
-            length: Integer sequence length.
             
         Returns:
-            Tuple of (reversed_landmarks, reversed_density_map, label, length).
+            Tuple of (reversed_landmarks, reversed_density_map, label).
         """
         if torch.rand(1).item() >= self.p:
-            return landmarks, density_map, label, length
+            return landmarks, density_map, label
         
         # Reverse along the time dimension (dim=0)
-        return torch.flip(landmarks, dims=[0]), torch.flip(density_map, dims=[0]), label, length
+        return torch.flip(landmarks, dims=[0]), torch.flip(density_map, dims=[0]), label
 
 
 class RandomScaling:
@@ -336,7 +328,7 @@ class RandomScaling:
         self.p = p
         self.scale_range = scale_range
     
-    def __call__(self, landmarks: torch.Tensor, density_map: torch.Tensor, label: int, length: int) -> tuple[torch.Tensor, torch.Tensor, int, int]:
+    def __call__(self, landmarks: torch.Tensor, density_map: torch.Tensor, label: int) -> tuple[torch.Tensor, torch.Tensor, int]:
         """Apply random scaling to angle values.
         
         Args:
@@ -344,21 +336,20 @@ class RandomScaling:
                        in the range [0, 1].
             density_map: Tensor of shape (T,) containing gaussian density map.
             label: Integer count.
-            length: Integer sequence length.
             
         Returns:
-            Tuple of (scaled_landmarks, density_map, label, length).
-            Note: density_map and length are unchanged by scaling.
+            Tuple of (scaled_landmarks, density_map, label).
+            Note: density_map is unchanged by scaling.
         """
         if torch.rand(1).item() >= self.p:
-            return landmarks, density_map, label, length
+            return landmarks, density_map, label
         
         # Sample scale factor uniformly from scale_range
         scale = torch.empty(1).uniform_(self.scale_range[0], self.scale_range[1]).item()
         
         # Apply scaling and clamp to valid range
         scaled = landmarks * scale
-        return torch.clamp(scaled, 0.0, 1.0), density_map, label, length
+        return torch.clamp(scaled, 0.0, 1.0), density_map, label
 
 
 class RandomDropout:
@@ -389,24 +380,23 @@ class RandomDropout:
         self.p = p
         self.dropout_rate = dropout_rate
     
-    def __call__(self, landmarks: torch.Tensor, density_map: torch.Tensor, label: int, length: int) -> tuple[torch.Tensor, torch.Tensor, int, int]:
+    def __call__(self, landmarks: torch.Tensor, density_map: torch.Tensor, label: int) -> tuple[torch.Tensor, torch.Tensor, int]:
         """Apply random dropout to landmarks.
         
         Args:
             landmarks: Tensor of shape (T, 6) containing angle features.
             density_map: Tensor of shape (T,) containing gaussian density map.
             label: Integer count.
-            length: Integer sequence length.
             
         Returns:
-            Tuple of (dropped_landmarks, density_map, label, length).
-            Note: density_map and length are unchanged by dropout.
+            Tuple of (dropped_landmarks, density_map, label).
+            Note: density_map is unchanged by dropout.
         """
         if torch.rand(1).item() >= self.p:
-            return landmarks, density_map, label, length
+            return landmarks, density_map, label
         
         # Create mask for individual features (True = keep, False = zero out)
         keep_mask = torch.rand_like(landmarks) >= self.dropout_rate
         
         # Zero out selected features
-        return landmarks * keep_mask.float(), density_map, label, length
+        return landmarks * keep_mask.float(), density_map, label

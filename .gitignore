@@ -237,3 +237,4 @@ video-data/**
 .landmark_cache_smoothed_angles_only
 validation-data
 .validation-cache
+.feature_cache

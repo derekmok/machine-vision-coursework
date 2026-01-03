@@ -21,67 +21,21 @@
 # periodically. We detect these oscillations using peak detection.
 #
 # This serves as a BASELINE for comparison with deep learning approaches.
+#
 
 # %%
-import torch
-from torch.utils.data import DataLoader, random_split
 import pandas as pd
 
 from data_loader import VideoDataset
 
-
-def get_dataloaders(video_dir, batch_size=1, val_split=0.2):
-    """Create train and validation dataloaders for landmark sequences.
-    
-    Args:
-        video_dir: Path to directory containing video files.
-        batch_size: Number of samples per batch.
-        val_split: Fraction of data to use for validation.
-        
-    Returns:
-        train_loader: DataLoader for training data.
-        val_loader: DataLoader for validation data.
-    """
-    
-    full_dataset = VideoDataset(video_dir)
-    
-    val_size = int(len(full_dataset) * val_split)
-    train_size = len(full_dataset) - val_size
-
-    # Perform train/val split with fixed seed for reproducibility
-    train_subset, val_subset = random_split(
-        full_dataset,
-        [train_size, val_size],
-        generator=torch.Generator().manual_seed(42)
-    )
-
-    train_loader = DataLoader(
-        train_subset,
-        batch_size=batch_size,
-        shuffle=True,
-        num_workers=0,
-    )
-
-    val_loader = DataLoader(
-        val_subset,
-        batch_size=batch_size,
-        shuffle=False,
-        num_workers=0,
-    )
-
-    print(f"Train: {len(train_subset)} videos, Val: {len(val_subset)} videos")
-    
-    return train_loader, val_loader
-
-
 video_dir = './video-data'
 
 # %%
-from count_pushups_heuristic import (
-    GridSearchResults,
-    HeuristicParameters,
+from feature_engineering.count_pushups_heuristic import (
     HeuristicPushupCounter,
     CountPushupResults,
+)
+from feature_engineering.heuristic_evaluation import (
     evaluate_on_dataset,
     grid_search_parameters,
 )
@@ -103,29 +57,24 @@ def run_heuristic_evaluation(
     Args:
         video_dir: Path to the video data directory.
     """
-    train_loader, val_loader = get_dataloaders(video_dir, batch_size=1, val_split=0.2)
-    
     print("Running grid search for optimal parameters...")
     
-    # Use training set for parameter tuning
+    # Use training set for parameter tuning and get train/val loaders
     search_results = grid_search_parameters(
-        train_loader,
+        video_dir=video_dir,
+        val_split=0.2,
         smoothing_windows=[11, 15, 21, 31],
         min_prominences=[0.03, 0.05, 0.08, 0.11],
         min_distances=[5, 10, 15, 20, 30],
         median_filter_sizes=[3, 5, 7],
     )
     
-    print(f"Best parameters: {search_results.best_params}")
-    print(f"Best MAE on training set: {search_results.best_mae:.4f}")
-    
-    
     # Create counter with best parameters from grid search
     counter = HeuristicPushupCounter(search_results.best_params)
     
     # Evaluate on training set
     print("\nTraining Set Results:")
-    train_metrics = evaluate_on_dataset(train_loader, counter)
+    train_metrics = evaluate_on_dataset(search_results.train_loader, counter)
     
     train_df = pd.DataFrame([{
         'MAE': train_metrics['mae'],
@@ -133,11 +82,10 @@ def run_heuristic_evaluation(
         'Within-1 Acc (%)': train_metrics['within_1_accuracy'] * 100
     }])
     print(train_df.to_string(index=False))
-
     
-    # Evaluate on validation set
+    # Evaluate on validation set using the val_loader from grid search
     print("\nValidation Set Results:")
-    val_metrics = evaluate_on_dataset(val_loader, counter)
+    val_metrics = evaluate_on_dataset(search_results.val_loader, counter)
     
     val_df = pd.DataFrame([{
         'MAE': val_metrics['mae'],
@@ -161,6 +109,71 @@ counter, train_metrics, val_metrics = run_heuristic_evaluation(
 # %%
 import matplotlib.pyplot as plt
 import cv2
+import numpy as np
+
+
+def plot_pushup_results(
+    pushup_results: CountPushupResults,
+    title: str = "Push-up Detection",
+    ax: plt.Axes = None,
+    save_path: str = None
+) -> plt.Figure:
+    """Plot the signal with detected peaks for visualization.
+    
+    Args:
+        pushup_results: CountPushupResults object from count_pushups.
+        title: Plot title.
+        ax: Optional matplotlib axes to plot on.
+        save_path: If provided, save the figure to this path.
+        
+    Returns:
+        The matplotlib Figure object.
+    """
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(12, 5))
+    else:
+        fig = ax.get_figure()
+    
+    # Extract signals from landmarks using signal_index
+    raw_signal = pushup_results.raw_landmarks[:, pushup_results.signal_index]
+    smoothed_signal = pushup_results.smoothed_landmarks[:, pushup_results.signal_index]
+    
+    frames = np.arange(len(raw_signal))
+    
+    # Plot raw signal
+    ax.plot(frames, raw_signal, 'b-', alpha=0.3, label='Raw Signal')
+    
+    # Plot smoothed signal
+    ax.plot(frames, smoothed_signal, 'b-', linewidth=2, label='Smoothed Signal')
+    
+    # Mark valleys (bottom positions = push-ups)
+    if len(pushup_results.valleys) > 0:
+        ax.scatter(
+            pushup_results.valleys,
+            smoothed_signal[pushup_results.valleys],
+            c='red', s=100, marker='v', zorder=5,
+            label=f"Valleys (Push-ups: {pushup_results.count})"
+        )
+    
+    # Mark peaks (top positions)
+    if len(pushup_results.peaks) > 0:
+        ax.scatter(
+            pushup_results.peaks,
+            smoothed_signal[pushup_results.peaks],
+            c='green', s=80, marker='^', zorder=5,
+            label='Peaks (Top position)'
+        )
+    
+    ax.set_xlabel('Frame')
+    ax.set_ylabel('Elbow Angle (degrees)')
+    ax.set_title(f"{title} - Detected: {pushup_results.count}")
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches='tight')
+        
+    return fig
 
 
 def get_video_frame(video_path: str, frame_idx: int):
@@ -199,10 +212,10 @@ def visualize_sample_detections(video_dir: str = './video-data', num_samples: in
     # Target FPS used during feature extraction (from PoseFeatureExtractor)
     TARGET_FPS = 30.0
     
-    dataset = VideoDataset(video_dir)
+    dataset = VideoDataset(video_dir, feature_processor=lambda features : (features.raw_landmarks,))
     
     for i in range(min(num_samples, len(dataset))):
-        landmarks, _, label, _ = dataset[i]
+        landmarks, label = dataset[i]
         video_filename = dataset.video_files[i]
         video_path = os.path.join(video_dir, video_filename)
         
@@ -220,9 +233,9 @@ def visualize_sample_detections(video_dir: str = './video-data', num_samples: in
         fps_ratio = source_fps / TARGET_FPS
         
         # Get debug info including peak/valley frame indices (in resampled space)
-        debug_info = counter.count_pushups(landmarks)
-        valleys = debug_info.valleys
-        peaks = debug_info.peaks
+        pushup_results = counter.count_pushups(landmarks)
+        valleys = pushup_results.valleys
+        peaks = pushup_results.peaks
         
         print(f"Video: {video_filename}")
         print(f"  Source FPS: {source_fps:.2f}, Target FPS: {TARGET_FPS}, Ratio: {fps_ratio:.2f}")
@@ -230,8 +243,8 @@ def visualize_sample_detections(video_dir: str = './video-data', num_samples: in
         
         # Create the signal plot
         fig_signal, ax_signal = plt.subplots(figsize=(14, 4))
-        counter.plot_debug(
-            landmarks, 
+        plot_pushup_results(
+            pushup_results, 
             title=f"Video {i+1} (Ground Truth: {label} push-ups)",
             ax=ax_signal
         )

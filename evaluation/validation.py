@@ -46,8 +46,7 @@ def evaluate_on_validation_data(
         print("Skipping validation evaluation.")
         return None
     
-    # Load the validation dataset (skip density map computation for inference)
-    val_dataset = VideoDataset(validation_dir, is_inference=True, cache_dir=".validation-cache")
+    val_dataset = VideoDataset.for_inference(validation_dir)
     
     if len(val_dataset) == 0:
         print("No videos found in validation directory.")

@@ -191,7 +191,7 @@ def train_model():
     )
 
     return trainer.train(
-        dataset=VideoDataset("video-data"),
+        video_data_dir="video-data",
         train_transform=Compose([
             RandomSequenceRepeat(),
             RandomSequenceReverse(),
@@ -236,11 +236,11 @@ from evaluation.ensemble_evaluation import (
     evaluate_ensemble_on_dataset,
     plot_density_maps,
     plot_predicted_vs_true,
+    plot_wrong_predictions_density_maps,
 )
 
 # Evaluate on the full training dataset
-dataset = VideoDataset("video-data")
-evaluation_results = evaluate_ensemble_on_dataset(model, dataset)
+evaluation_results = evaluate_ensemble_on_dataset(model, "video-data")
 
 # Create a summary of evaluation results
 metrics_df = pd.DataFrame({
@@ -267,8 +267,13 @@ plot_density_maps(evaluation_results, num_samples=6)
 
 
 # %%
+# Plot density maps for wrongly predicted samples
+plot_wrong_predictions_density_maps(evaluation_results, num_samples=6)
+
+# %%
 # Plot predicted vs true counts
 plot_predicted_vs_true(evaluation_results)
+
 
 # %% [markdown]
 # ## Validation on Unseen Data

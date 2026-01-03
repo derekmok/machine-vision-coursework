@@ -6,6 +6,7 @@ MediaPipe and compute joint angles (elbow, shoulder, and hip angles).
 
 import os
 import urllib.request
+from dataclasses import dataclass
 
 import cv2
 import mediapipe as mp
@@ -15,7 +16,6 @@ from mediapipe.tasks import python as mp_tasks
 from mediapipe.tasks.python import vision
 from mediapipe.tasks.python.vision.pose_landmarker import PoseLandmarkerResult
 
-from count_pushups_heuristic import HeuristicParameters, HeuristicPushupCounter
 from feature_engineering.constants import (
     LEFT_ELBOW_ANGLE_IDX,
     RIGHT_ELBOW_ANGLE_IDX,
@@ -24,6 +24,7 @@ from feature_engineering.constants import (
     LEFT_BODY_ANGLE_IDX,
     RIGHT_BODY_ANGLE_IDX
 )
+from feature_engineering.count_pushups_heuristic import CounterParameters, HeuristicPushupCounter
 
 # MediaPipe Pose landmark indices
 LEFT_SHOULDER = 11
@@ -36,6 +37,20 @@ LEFT_HIP = 23
 RIGHT_HIP = 24
 LEFT_KNEE = 25
 RIGHT_KNEE = 26
+
+
+@dataclass
+class PoseExtractionResult:
+    """Data class for pose extraction results.
+    
+    Attributes:
+        smoothed_landmarks: Tensor of shape (T, 6) containing smoothed angle features.
+        raw_landmarks: Tensor of shape (T, 6) containing raw (unsmoothed) angle features.
+        density_map: Tensor of shape (T,) containing the gaussian density map.
+    """
+    smoothed_landmarks: torch.Tensor
+    raw_landmarks: torch.Tensor
+    density_map: torch.Tensor
 
 
 class PoseFeatureExtractor:
@@ -111,7 +126,7 @@ class PoseFeatureExtractor:
         
         return resampled
     
-    def extract_features(self, video_path):
+    def extract(self, video_path) -> PoseExtractionResult:
         """Extract pose angle features and density map from a video file.
         
         Computes the following 6 angle features per frame:
@@ -133,10 +148,12 @@ class PoseFeatureExtractor:
             video_path: Path to the video file.
             
         Returns:
-            Tuple of (angles_tensor, density_map):
-            - angles_tensor: Tensor of shape (T, 6) containing angle features
+            PoseExtractionResult containing:
+            - smoothed_landmarks: Tensor of shape (T, 6) containing angle features
               normalized to 0-1, where T is the number of frames at the target
               frame rate. If no pose is detected in a frame, angles are set to 0.
+            - raw_landmarks: Tensor of shape (T, 6) containing raw (unsmoothed) 
+              angle features.
             - density_map: Tensor of shape (T,) containing the gaussian density
               map with values 0-1, indicating push-up positions.
         """
@@ -177,14 +194,14 @@ class PoseFeatureExtractor:
             landmarker.close()
             cap.release()
 
-        angles_tensor = torch.tensor(angles_list, dtype=torch.float64)
+        raw_angles_tensor = torch.tensor(angles_list, dtype=torch.float32)
         
         # Resample to target frame rate for consistent temporal resolution
-        angles_tensor = self._resample_to_target_fps(angles_tensor, source_fps)
+        raw_angles_tensor = self._resample_to_target_fps(raw_angles_tensor, source_fps)
         
         # Use HeuristicPushupCounter for smoothing and peak detection
         # This ensures consistency with the baseline counter
-        params = HeuristicParameters(
+        params = CounterParameters(
             smoothing_window=21,
             poly_order=3,
             min_prominence=0.11,
@@ -194,16 +211,20 @@ class PoseFeatureExtractor:
         counter = HeuristicPushupCounter(params)
         
         # This will smooth the landmarks AND detect peaks/valleys
-        pushup_results = counter.count_pushups(angles_tensor)
-        angles_tensor = torch.tensor(pushup_results.smoothed_landmarks, dtype=torch.float64)
+        pushup_results = counter.count_pushups(raw_angles_tensor)
+        smoothed_angles_tensor = torch.tensor(pushup_results.smoothed_landmarks, dtype=torch.float32)
         
         # Compute gaussian density map from detected push-up positions
         if self.compute_density_map_flag:
-            density_map = self._generate_gaussian_density_map(pushup_results.valleys, len(angles_tensor))
+            density_map = self._generate_gaussian_density_map(pushup_results.valleys, len(smoothed_angles_tensor))
         else:
-            density_map = torch.zeros(len(angles_tensor), dtype=torch.float64)
+            density_map = torch.zeros(len(smoothed_angles_tensor), dtype=torch.float32)
 
-        return angles_tensor, density_map
+        return PoseExtractionResult(
+            smoothed_landmarks=smoothed_angles_tensor,
+            raw_landmarks=raw_angles_tensor,
+            density_map=density_map
+        )
 
     def _generate_gaussian_density_map(self, valleys: np.ndarray, num_frames: int) -> torch.Tensor:
         """Generate a gaussian density map from detected valley positions.
@@ -215,7 +236,7 @@ class PoseFeatureExtractor:
         Returns:
             Tensor of shape (num_frames,) containing the gaussian density map.
         """
-        density_map = np.zeros(num_frames, dtype=np.float32)
+        density_map = np.zeros(num_frames, dtype=np.float64)
         
         if len(valleys) > 0:
             # Gaussian sigma: spread based on expected push-up duration
@@ -230,7 +251,7 @@ class PoseFeatureExtractor:
                 gaussian = gaussian / (gaussian.sum() + 1e-8)  # Normalize so this bump sums to 1
                 density_map += gaussian
         
-        return torch.tensor(density_map, dtype=torch.float64)
+        return torch.tensor(density_map, dtype=torch.float32)
 
     @staticmethod
     def _compute_angle(a, b, c):

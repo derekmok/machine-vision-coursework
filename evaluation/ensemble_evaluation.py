@@ -6,10 +6,11 @@ from typing import Optional, TypedDict
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader
 
+from data_loader import VideoDataset
 from neural_net.ensemble_wrapper import EnsembleWrapper
-from .metrics import compute_prediction_metrics
+from evaluation.metrics import compute_prediction_metrics
 
 
 class EnsembleEvaluationResult(TypedDict):
@@ -25,19 +26,27 @@ class EnsembleEvaluationResult(TypedDict):
 
 def evaluate_ensemble_on_dataset(
     ensemble: EnsembleWrapper,
-    dataset: Dataset,
+    video_dir: str,
     device: Optional[torch.device] = None,
 ) -> EnsembleEvaluationResult:
     """Evaluate ensemble on a dataset and compute statistics.
     
     Args:
         ensemble: EnsembleWrapper model
-        dataset: Dataset to evaluate on
+        video_dir: Directory containing video files
         device: torch.device (defaults to cuda if available)
         
     Returns:
         Dictionary with predictions, targets, and metrics
     """
+    # Create dataset internally
+    dataset = VideoDataset(
+        video_dir,
+        feature_processor=lambda features: (
+            features.smoothed_landmarks,
+            features.density_map
+        )
+    )
     if device is None:
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -51,7 +60,7 @@ def evaluate_ensemble_on_dataset(
     loader = DataLoader(dataset, batch_size=1, shuffle=False)
 
     with torch.no_grad():
-        for sequences, density_maps, labels, _ in loader:
+        for sequences, density_maps, labels in loader:
             sequences = sequences.to(device)
 
             # Get ensemble predictions
@@ -115,6 +124,76 @@ def plot_density_maps(results: EnsembleEvaluationResult, num_samples: int = 6) -
     plt.savefig('plots/ensemble_density_maps.png', dpi=150, bbox_inches='tight')
     plt.show()
     print("Density maps saved to 'plots/ensemble_density_maps.png'")
+
+
+def plot_wrong_predictions_density_maps(results: EnsembleEvaluationResult, num_samples: int = 6) -> None:
+    """Plot density maps for wrongly predicted samples.
+    
+    Args:
+        results: Dictionary from evaluate_ensemble_on_dataset
+        num_samples: Maximum number of samples to plot
+    """
+    # Identify wrongly predicted samples
+    rounded_predictions = results['rounded_predictions']
+    targets = results['targets']
+    wrong_indices = np.where(rounded_predictions != targets)[0]
+    
+    if len(wrong_indices) == 0:
+        print("No wrong predictions found! The model is perfect!")
+        return
+    
+    # Limit to num_samples
+    num_to_plot = min(num_samples, len(wrong_indices))
+    if num_to_plot < num_samples:
+        print(f"Only {num_to_plot} wrong predictions found (requested {num_samples})")
+    
+    # Select samples to plot (evenly spaced if there are more than num_samples)
+    if len(wrong_indices) > num_samples:
+        selected_indices = wrong_indices[np.linspace(0, len(wrong_indices) - 1, num_samples, dtype=int)]
+    else:
+        selected_indices = wrong_indices
+    
+    # Determine grid size
+    n_cols = 3
+    n_rows = (num_to_plot + n_cols - 1) // n_cols  # Ceiling division
+    
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(14, 4 * n_rows))
+    if n_rows == 1:
+        axes = axes.reshape(1, -1)
+    axes = axes.flatten()
+    
+    for i, idx in enumerate(selected_indices):
+        density_map = results['density_maps'][idx]
+        target = results['targets'][idx]
+        pred = results['predictions'][idx]
+        rounded_pred = results['rounded_predictions'][idx]
+        error = int(rounded_pred - target)
+        
+        ax = axes[i]
+        ax.plot(density_map, color='crimson', linewidth=1.5)
+        ax.fill_between(range(len(density_map)), density_map, alpha=0.3, color='crimson')
+        ax.set_title(f'Sample {idx + 1} (ERROR: {error:+d})\nTarget: {int(target)}, Pred: {pred:.2f} (→ {int(rounded_pred)})',
+                     fontsize=10)
+        ax.set_xlabel('Frame')
+        ax.set_ylabel('Density')
+        ax.grid(True, alpha=0.3)
+        ax.set_ylim(bottom=0)
+    
+    # Hide unused subplots
+    for i in range(num_to_plot, len(axes)):
+        axes[i].axis('off')
+    
+    fig.suptitle(f'Wrong Predictions - Density Maps ({num_to_plot}/{len(wrong_indices)} errors shown)', 
+                 fontsize=14, fontweight='bold')
+    plt.tight_layout()
+    
+    # Create plots directory if it doesn't exist
+    os.makedirs('plots', exist_ok=True)
+    
+    plt.savefig('plots/wrong_predictions_density_maps.png', dpi=150, bbox_inches='tight')
+    plt.show()
+    print(f"Wrong predictions density maps saved to 'plots/wrong_predictions_density_maps.png'")
+    print(f"Total wrong predictions: {len(wrong_indices)} out of {len(targets)} samples ({len(wrong_indices)/len(targets)*100:.1f}%)")
 
 
 def plot_predicted_vs_true(results: EnsembleEvaluationResult) -> None:

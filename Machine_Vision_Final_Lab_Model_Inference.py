@@ -214,7 +214,7 @@ def run_inference(model, bucket_name='training-and-validation-data'):
     model = model.to(device)
 
     # Create dataloader
-    test_dataset = VideoDataset(test_dir, is_inference=True)
+    test_dataset = VideoDataset.for_inference(test_dir)
     test_loader = DataLoader(
         test_dataset,
         batch_size=1,
