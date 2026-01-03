@@ -14,10 +14,12 @@ Key Approach:
 from dataclasses import dataclass
 from typing import Optional
 
+import itertools
 import matplotlib.pyplot as plt
 import numpy as np
 from scipy.ndimage import median_filter
 from scipy.signal import savgol_filter, find_peaks
+from tqdm.auto import tqdm
 
 
 @dataclass
@@ -52,6 +54,28 @@ class GridSearchResults:
     all_results: list
 
 
+@dataclass
+class CountPushupResults:
+    """Results from heuristic push-up counting.
+    
+    Attributes:
+        count: Number of push-ups detected
+        raw_signal: Original extracted signal (from input landmarks)
+        smoothed_signal: Smoothed signal after filtering
+        valleys: Indices of detected valleys (bottom positions)
+        peaks: Indices of detected peaks (top positions)
+        elbow_index: Index of the elbow angle used (0=left, 1=right)
+        smoothed_landmarks: Smoothed landmarks sequence of shape (T, 6)
+    """
+    count: int
+    raw_signal: np.ndarray
+    smoothed_signal: np.ndarray
+    valleys: np.ndarray
+    peaks: np.ndarray
+    elbow_index: int
+    smoothed_landmarks: np.ndarray
+
+
 class HeuristicPushupCounter:
     """Signal processing based push-up counter.
     
@@ -78,46 +102,31 @@ class HeuristicPushupCounter:
     
     def __init__(
         self,
-        smoothing_window: int = 15,
-        poly_order: int = 3,
-        min_prominence: float = 0.02,
-        min_distance: int = 10,
-        median_filter_size: int = 3,
+        params: HeuristicParameters,
         skip_smoothing: bool = False,
     ):
         """Initialize the heuristic push-up counter.
         
         Args:
-            smoothing_window: Window size for Savitzky-Golay filter. Must be odd.
-                Larger values = more smoothing. Typical range: 11-21 for 30fps video.
-            poly_order: Polynomial order for Savitzky-Golay filter. 
-                Higher values preserve peak shapes better. Typical: 2-4.
-            min_prominence: Minimum amplitude difference from surrounding signal
-                for a point to be considered a valid peak. Filters out noise.
-                Should be tuned based on the typical push-up amplitude.
-            min_distance: Minimum number of frames between detected peaks.
-                Set based on the fastest expected push-up speed. At 30fps,
-                a distance of 10 means at most 3 push-ups per second.
-            median_filter_size: Kernel size for median filter to remove outliers.
-                Must be odd. Applied before Savitzky-Golay smoothing. Typical: 3-7.
+            params: HeuristicParameters object containing algorithm configuration.
             skip_smoothing: If True, skip all smoothing steps.
                 Use this when the input sequence is already pre-smoothed.
         """
-        if smoothing_window % 2 == 0:
+        if params.smoothing_window % 2 == 0:
             raise ValueError("smoothing_window must be odd")
-        if poly_order >= smoothing_window:
+        if params.poly_order >= params.smoothing_window:
             raise ValueError("poly_order must be less than smoothing_window")
-        if median_filter_size % 2 == 0:
+        if params.median_filter_size % 2 == 0:
             raise ValueError("median_filter_size must be odd")
             
-        self.smoothing_window = smoothing_window
-        self.poly_order = poly_order
-        self.min_prominence = min_prominence
-        self.min_distance = min_distance
-        self.median_filter_size = median_filter_size
+        self.smoothing_window = params.smoothing_window
+        self.poly_order = params.poly_order
+        self.min_prominence = params.min_prominence
+        self.min_distance = params.min_distance
+        self.median_filter_size = params.median_filter_size
         self.skip_smoothing = skip_smoothing
     
-    def extract_signal(self, landmarks: np.ndarray) -> np.ndarray:
+    def extract_signal(self, landmarks: np.ndarray) -> tuple[np.ndarray, int]:
         """Extract the primary push-up signal from angle features.
         
         Uses the elbow angle with more movement (higher range) as the primary signal.
@@ -128,7 +137,10 @@ class HeuristicPushupCounter:
                 in degrees for T frames.
                 
         Returns:
-            1D numpy array of shape (T,) containing the selected elbow angle signal.
+            Tuple of (signal, elbow_index):
+            - signal: 1D numpy array of shape (T,) containing the selected elbow angle signal.
+            - elbow_index: Index of the elbow used (0=left, 1=right). Caller can use this
+              to extract the raw signal from the original input landmarks.
         """
         left_elbow_angle = landmarks[:, self.LEFT_ELBOW_ANGLE_IDX]
         right_elbow_angle = landmarks[:, self.RIGHT_ELBOW_ANGLE_IDX]
@@ -138,39 +150,41 @@ class HeuristicPushupCounter:
         right_range = np.ptp(right_elbow_angle)
         
         if left_range >= right_range:
-            return left_elbow_angle
+            return left_elbow_angle, self.LEFT_ELBOW_ANGLE_IDX
         else:
-            return right_elbow_angle
+            return right_elbow_angle, self.RIGHT_ELBOW_ANGLE_IDX
     
-    def smooth_signal(self, signal: np.ndarray) -> np.ndarray:
-        """Apply two-stage smoothing to reduce noise.
+    def smooth_landmarks(self, landmarks: np.ndarray) -> np.ndarray:
+        """Apply two-stage smoothing to the entire landmarks sequence.
         
         Stage 1: Median filter removes outliers/spikes from pose detection
                  failures or incorrect landmark positions.
         Stage 2: Savitzky-Golay filter smooths high-frequency jitter while
                  preserving signal peaks and timing (zero phase lag).
         
-        If skip_smoothing is True, returns the signal unchanged.
+        If skip_smoothing is True, returns the landmarks unchanged.
         
         Args:
-            signal: 1D numpy array of the raw signal.
+            landmarks: Numpy array of shape (T, 6) containing angle features.
             
         Returns:
-            1D numpy array of the smoothed signal (same length as input).
+            Numpy array of shape (T, 6) with smoothed angle features.
         """
         # Skip smoothing if already pre-smoothed
         if self.skip_smoothing:
-            return signal
+            return landmarks
             
-        # Handle edge case where signal is shorter than window
-        if len(signal) < self.smoothing_window:
-            return signal
+        # Handle edge case where sequence is shorter than window
+        if len(landmarks) < self.smoothing_window:
+            return landmarks
         
-        # Stage 1: Median filter to remove outliers
-        signal = median_filter(signal, size=self.median_filter_size)
+        # Stage 1: Median filter to remove outliers along time axis
+        smoothed = median_filter(landmarks, size=(self.median_filter_size, 1))
         
-        # Stage 2: Savitzky-Golay filter to smooth jitter
-        return savgol_filter(signal, self.smoothing_window, self.poly_order)
+        # Stage 2: Savitzky-Golay filter to smooth jitter along time axis
+        smoothed = savgol_filter(smoothed, self.smoothing_window, self.poly_order, axis=0)
+        
+        return smoothed
     
     def detect_peaks(self, signal: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """Detect peaks and valleys in the push-up signal.
@@ -203,53 +217,69 @@ class HeuristicPushupCounter:
         
         return valleys, peaks
 
-    def count_pushups(self, landmarks: np.ndarray) -> dict:
+    def count_pushups(self, landmarks: np.ndarray) -> CountPushupResults:
         """Count push-ups and return debug information.
         
-        Useful for visualization and parameter tuning.
+        Process:
+        1. Smooth the entire landmarks sequence
+        2. Extract the elbow signal with the most movement from smoothed landmarks
+        3. Detect peaks/valleys on the smoothed signal
+        
+        Note: Zero-padding is not handled because batch_size=1 is used everywhere
+        when processing landmarks, so sequences are never padded.
         
         Args:
             landmarks: Numpy array of shape (T, 6).
             
         Returns:
-            Dictionary containing:
+            CountPushupResults dataclass containing:
                 - count: Push-up count
-                - raw_signal: Original extracted signal
-                - smoothed_signal: After Savitzky-Golay smoothing
+                - raw_signal: Original extracted signal from input landmarks
+                - smoothed_signal: Signal extracted from smoothed landmarks
                 - valleys: Indices of detected valleys (bottom positions)
                 - peaks: Indices of detected peaks (top positions)
+                - elbow_index: Which elbow was used (0=left, 1=right)
+                - smoothed_landmarks: The smoothed landmarks sequence (T, 6)
         """
         # Convert torch tensor if needed
         if hasattr(landmarks, 'numpy'):
             landmarks = landmarks.numpy()
-            
-        # Handle zero-padded sequences
-        valid_mask = ~np.all(landmarks == 0, axis=1)
-        if valid_mask.any():
-            last_valid = np.where(valid_mask)[0][-1] + 1
-            landmarks = landmarks[:last_valid]
-            
-        raw_signal = self.extract_signal(landmarks)
         
-        if len(raw_signal) < self.smoothing_window:
-            return {
-                'count': 0,
-                'raw_signal': raw_signal,
-                'smoothed_signal': raw_signal,
-                'valleys': np.array([]),
-                'peaks': np.array([]),
-            }
-            
-        smoothed_signal = self.smooth_signal(raw_signal)
+        # Determine which elbow to use based on RAW landmarks (before smoothing)
+        # This maintains consistency with the original behavior where elbow selection
+        # was based on the unsmoothed signal's movement range
+        _, elbow_index = self.extract_signal(landmarks)
+        
+        # Smooth the entire landmarks sequence
+        smoothed_landmarks = self.smooth_landmarks(landmarks)
+        
+        # Get signals using the predetermined elbow
+        raw_signal = landmarks[:, elbow_index]
+        smoothed_signal = smoothed_landmarks[:, elbow_index]
+        
+        if len(smoothed_signal) < self.smoothing_window:
+            return CountPushupResults(
+                count=0,
+                raw_signal=raw_signal,
+                smoothed_signal=smoothed_signal,
+                valleys=np.array([]),
+                peaks=np.array([]),
+                elbow_index=elbow_index,
+                smoothed_landmarks=smoothed_landmarks,
+            )
+        
+        # Detect peaks on the smoothed signal
         valleys, peaks = self.detect_peaks(smoothed_signal)
         
-        return {
-            'count': len(valleys),
-            'raw_signal': raw_signal,
-            'smoothed_signal': smoothed_signal,
-            'valleys': valleys,
-            'peaks': peaks,
-        }
+        return CountPushupResults(
+            count=len(valleys),
+            raw_signal=raw_signal,
+            smoothed_signal=smoothed_signal,
+            valleys=valleys,
+            peaks=peaks,
+            elbow_index=elbow_index,
+            smoothed_landmarks=smoothed_landmarks,
+        )
     
     def plot_debug(
         self, 
@@ -276,35 +306,35 @@ class HeuristicPushupCounter:
         else:
             fig = ax.get_figure()
             
-        frames = np.arange(len(debug['raw_signal']))
+        frames = np.arange(len(debug.raw_signal))
         
         # Plot raw signal
-        ax.plot(frames, debug['raw_signal'], 'b-', alpha=0.3, label='Raw Signal')
+        ax.plot(frames, debug.raw_signal, 'b-', alpha=0.3, label='Raw Signal')
         
         # Plot smoothed signal
-        ax.plot(frames, debug['smoothed_signal'], 'b-', linewidth=2, label='Smoothed Signal')
+        ax.plot(frames, debug.smoothed_signal, 'b-', linewidth=2, label='Smoothed Signal')
         
         # Mark valleys (bottom positions = push-ups)
-        if len(debug['valleys']) > 0:
+        if len(debug.valleys) > 0:
             ax.scatter(
-                debug['valleys'], 
-                debug['smoothed_signal'][debug['valleys']], 
+                debug.valleys, 
+                debug.smoothed_signal[debug.valleys], 
                 c='red', s=100, marker='v', zorder=5,
-                label=f"Valleys (Push-ups: {debug['count']})"
+                label=f"Valleys (Push-ups: {debug.count})"
             )
         
         # Mark peaks (top positions)
-        if len(debug['peaks']) > 0:
+        if len(debug.peaks) > 0:
             ax.scatter(
-                debug['peaks'], 
-                debug['smoothed_signal'][debug['peaks']], 
+                debug.peaks, 
+                debug.smoothed_signal[debug.peaks], 
                 c='green', s=80, marker='^', zorder=5,
                 label='Peaks (Top position)'
             )
         
         ax.set_xlabel('Frame')
         ax.set_ylabel('Elbow Angle (degrees)')
-        ax.set_title(f"{title} - Detected: {debug['count']}")
+        ax.set_title(f"{title} - Detected: {debug.count}")
         ax.legend()
         ax.grid(True, alpha=0.3)
         
@@ -340,7 +370,7 @@ def evaluate_on_dataset(
             length = batch_lengths[i].item()
             landmarks = batch_landmarks[i, :length].numpy()
             
-            pred = counter.count_pushups(landmarks)['count']
+            pred = counter.count_pushups(landmarks).count
             actual = batch_labels[i].item()
             
             predictions.append(pred)
@@ -393,49 +423,50 @@ def grid_search_parameters(
     
     total = (len(smoothing_windows) * len(min_prominences) * 
              len(min_distances) * len(median_filter_sizes))
-    current = 0
     
-    for window in smoothing_windows:
-        for prominence in min_prominences:
-            for distance in min_distances:
-                for median_size in median_filter_sizes:
-                    current += 1
-                    print(f"[{current}/{total}] Testing window={window}, "
-                          f"prominence={prominence}, distance={distance}, "
-                          f"median_filter={median_size}")
-                    
-                    counter = HeuristicPushupCounter(
-                        smoothing_window=window,
-                        poly_order=poly_order,
-                        min_prominence=prominence,
-                        min_distance=distance,
-                        median_filter_size=median_size,
-                    )
-                    
-                    metrics = evaluate_on_dataset(data_loader, counter)
-                    
-                    result = {
-                        'smoothing_window': window,
-                        'min_prominence': prominence,
-                        'min_distance': distance,
-                        'median_filter_size': median_size,
-                        'mae': metrics['mae'],
-                        'accuracy': metrics['accuracy'],
-                        'within_1_accuracy': metrics['within_1_accuracy'],
-                    }
-                    all_results.append(result)
-                    
-                    if metrics['mae'] < best_mae:
-                        best_mae = metrics['mae']
-                        best_params = HeuristicParameters(
-                            smoothing_window=window,
-                            poly_order=poly_order,
-                            min_prominence=prominence,
-                            min_distance=distance,
-                            median_filter_size=median_size,
-                        )
-                        print(f"  -> New best MAE: {best_mae:.4f}")
+    iterator = itertools.product(
+        smoothing_windows, min_prominences, min_distances, median_filter_sizes
+    )
+
+    for window, prominence, distance, median_size in tqdm(iterator, total=total, desc="Grid Search"):
+        params = HeuristicParameters(
+            smoothing_window=window,
+            poly_order=poly_order,
+            min_prominence=prominence,
+            min_distance=distance,
+            median_filter_size=median_size,
+        )
+        counter = HeuristicPushupCounter(params)
+        
+        metrics = evaluate_on_dataset(data_loader, counter)
+        
+        result = {
+            'smoothing_window': window,
+            'min_prominence': prominence,
+            'min_distance': distance,
+            'median_filter_size': median_size,
+            'mae': metrics['mae'],
+            'accuracy': metrics['accuracy'],
+            'within_1_accuracy': metrics['within_1_accuracy'],
+        }
+        all_results.append(result)
+        
+        if metrics['mae'] < best_mae:
+            best_mae = metrics['mae']
+            best_params = HeuristicParameters(
+                smoothing_window=window,
+                poly_order=poly_order,
+                min_prominence=prominence,
+                min_distance=distance,
+                median_filter_size=median_size,
+            )
     
+    print("\n" + "="*50)
+    print(f"Grid Search Complete.")
+    print(f"Best MAE: {best_mae:.4f}")
+    print(f"Best Parameters: {best_params}")
+    print("="*50 + "\n")
+
     return GridSearchResults(
         best_params=best_params,
         best_mae=best_mae,

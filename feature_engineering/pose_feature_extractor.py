@@ -4,19 +4,18 @@ This module provides functionality to extract pose landmarks from videos using
 MediaPipe and compute joint angles (elbow, shoulder, and hip angles).
 """
 
+import os
+import urllib.request
+
 import cv2
 import mediapipe as mp
 import numpy as np
 import torch
-import os
-import urllib.request
 from mediapipe.tasks import python as mp_tasks
 from mediapipe.tasks.python import vision
 from mediapipe.tasks.python.vision.pose_landmarker import PoseLandmarkerResult
-from scipy.ndimage import median_filter
-from scipy.signal import savgol_filter
 
-from count_pushups_heuristic import HeuristicPushupCounter
+from count_pushups_heuristic import HeuristicParameters, HeuristicPushupCounter
 
 # MediaPipe Pose landmark indices
 LEFT_SHOULDER = 11
@@ -104,7 +103,7 @@ class PoseFeatureExtractor:
         
         return resampled
     
-    def extract_joint_angles(self, video_path):
+    def extract_features(self, video_path):
         """Extract pose angle features and density map from a video file.
         
         Computes the following 6 angle features per frame:
@@ -175,89 +174,39 @@ class PoseFeatureExtractor:
         # Resample to target frame rate for consistent temporal resolution
         angles_tensor = self._resample_to_target_fps(angles_tensor, source_fps)
         
-        # Apply smoothing to reduce noise from pose estimation
-        angles_tensor = self._smooth_angles(angles_tensor)
+        # Use HeuristicPushupCounter for smoothing and peak detection
+        # This ensures consistency with the baseline counter
+        params = HeuristicParameters(
+            smoothing_window=21,
+            poly_order=3,
+            min_prominence=0.11,
+            min_distance=5,
+            median_filter_size=3
+        )
+        counter = HeuristicPushupCounter(params)
+        
+        # This will smooth the landmarks AND detect peaks/valleys
+        pushup_results = counter.count_pushups(angles_tensor)
+        angles_tensor = torch.tensor(pushup_results.smoothed_landmarks, dtype=torch.float32)
         
         # Compute gaussian density map from detected push-up positions
         if self.compute_density_map_flag:
-            density_map = self._compute_density_map(angles_tensor)
+            density_map = self._generate_gaussian_density_map(pushup_results.valleys, len(angles_tensor))
         else:
             density_map = torch.zeros(len(angles_tensor), dtype=torch.float32)
 
         return angles_tensor, density_map
 
-    def _smooth_angles(self, angles_tensor):
-        """Apply two-stage smoothing to angle sequences.
-        
-        Stage 1: Median filter removes outliers/spikes from pose detection
-                 failures or incorrect landmark positions.
-        Stage 2: Savitzky-Golay filter smooths high-frequency jitter while
-                 preserving signal peaks and timing (zero phase lag).
+    def _generate_gaussian_density_map(self, valleys: np.ndarray, num_frames: int) -> torch.Tensor:
+        """Generate a gaussian density map from detected valley positions.
         
         Args:
-            angles_tensor: Tensor of shape (T, 6) containing angle features.
+            valleys: Array of valley indices (bottom positions of push-ups).
+            num_frames: Total number of frames in the sequence.
             
         Returns:
-            Smoothed tensor of shape (T, 6).
+            Tensor of shape (num_frames,) containing the gaussian density map.
         """
-        # Need at least window_length frames for Savitzky-Golay
-        if angles_tensor.shape[0] < 5:
-            return angles_tensor
-        
-        angles_np = angles_tensor.numpy()
-        
-        # Stage 1: Median filter to remove outliers (kernel_size=3)
-        # Applied along the time axis (axis=0) for each angle channel
-        angles_np = median_filter(angles_np, size=(3, 1))
-        
-        # Stage 2: Savitzky-Golay filter to smooth jitter (window=5, order=2)
-        # Applied along the time axis (axis=0) for each angle channel
-        angles_np = savgol_filter(angles_np, window_length=5, polyorder=2, axis=0)
-        
-        return torch.tensor(angles_np, dtype=torch.float32)
-
-    def _compute_density_map(self, angles_tensor):
-        """Compute a gaussian density map from detected push-up positions.
-        
-        Uses HeuristicPushupCounter from count_pushups_heuristic.py to detect
-        push-up valleys (bottom positions) and creates a gaussian density map
-        over the sequence. This provides a soft target for regression that
-        encodes the temporal location of push-ups.
-        
-        Signal Processing Parameters (optimized via grid search):
-            - smoothing_window: 21 frames
-            - poly_order: 3 (cubic polynomial)
-            - min_prominence: 0.11 (for normalized 0-1 angles)
-            - min_distance: 5 frames
-        
-        Args:
-            angles_tensor: Tensor of shape (T, 6) containing normalized angle features.
-            
-        Returns:
-            Tensor of shape (T,) containing the gaussian density map, where values
-            are higher near detected push-up positions.
-        """
-        # Signal processing parameters (optimized for this task)
-        # skip_smoothing=True because angles_tensor is already smoothed by _smooth_angles
-        counter = HeuristicPushupCounter(
-            smoothing_window=21,
-            poly_order=3,
-            min_prominence=0.11,
-            min_distance=5,
-            skip_smoothing=True,
-        )
-        
-        num_frames = len(angles_tensor)
-        
-        # Handle edge case: sequence too short for processing
-        if num_frames < counter.smoothing_window:
-            return torch.zeros(num_frames, dtype=torch.float32)
-        
-        # Use the counter's debug method to get detected valleys
-        debug_info = counter.count_pushups(angles_tensor)
-        valleys = debug_info['valleys']
-        
-        # Create gaussian density map
         density_map = np.zeros(num_frames, dtype=np.float32)
         
         if len(valleys) > 0:
@@ -270,7 +219,7 @@ class PoseFeatureExtractor:
             frame_indices = np.arange(num_frames)
             for valley_idx in valleys:
                 gaussian = np.exp(-0.5 * ((frame_indices - valley_idx) / sigma) ** 2)
-                gaussian = gaussian / gaussian.sum()  # Normalize so this bump sums to 1
+                gaussian = gaussian / (gaussian.sum() + 1e-8)  # Normalize so this bump sums to 1
                 density_map += gaussian
         
         return torch.tensor(density_map, dtype=torch.float32)

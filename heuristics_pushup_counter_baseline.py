@@ -25,6 +25,7 @@
 # %%
 import torch
 from torch.utils.data import DataLoader, random_split
+import pandas as pd
 
 from data_loader import VideoDataset
 
@@ -80,6 +81,7 @@ from count_pushups_heuristic import (
     GridSearchResults,
     HeuristicParameters,
     HeuristicPushupCounter,
+    CountPushupResults,
     evaluate_on_dataset,
     grid_search_parameters,
 )
@@ -117,44 +119,32 @@ def run_heuristic_evaluation(
     print(f"Best parameters: {search_results.best_params}")
     print(f"Best MAE on training set: {search_results.best_mae:.4f}")
     
-    # Unpack dataclass fields to pass to HeuristicPushupCounter
-    counter = HeuristicPushupCounter(
-        smoothing_window=search_results.best_params.smoothing_window,
-        poly_order=search_results.best_params.poly_order,
-        min_prominence=search_results.best_params.min_prominence,
-        min_distance=search_results.best_params.min_distance,
-        median_filter_size=search_results.best_params.median_filter_size,
-    )
+    
+    # Create counter with best parameters from grid search
+    counter = HeuristicPushupCounter(search_results.best_params)
     
     # Evaluate on training set
-    print("Training Set Results:")
+    print("\nTraining Set Results:")
     train_metrics = evaluate_on_dataset(train_loader, counter)
-    print(f"MAE: {train_metrics['mae']:.4f}")
-    print(f"Exact Accuracy: {train_metrics['accuracy'] * 100:.2f}%")
-    print(f"Within-1 Accuracy: {train_metrics['within_1_accuracy'] * 100:.2f}%")
     
-    # Per-sample breakdown
-    print("\nPer-sample breakdown:")
-    for pred, label in zip(train_metrics['predictions'], train_metrics['labels']):
-        status = "✓" if pred == label else "✗"
-        print(f"{status} Predicted: {pred}, Actual: {label}")
+    train_df = pd.DataFrame([{
+        'MAE': train_metrics['mae'],
+        'Accuracy (%)': train_metrics['accuracy'] * 100,
+        'Within-1 Acc (%)': train_metrics['within_1_accuracy'] * 100
+    }])
+    print(train_df.to_string(index=False))
+
     
     # Evaluate on validation set
-    print()
-    print("Validation Set Results:")
+    print("\nValidation Set Results:")
     val_metrics = evaluate_on_dataset(val_loader, counter)
-    print(f"MAE: {val_metrics['mae']:.4f}")
-    print(f"Exact Accuracy: {val_metrics['accuracy'] * 100:.2f}%")
-    print(f"Within-1 Accuracy: {val_metrics['within_1_accuracy'] * 100:.2f}%")
     
-    # Per-sample breakdown
-    print("\nPer-sample breakdown:")
-    for pred, label in zip(val_metrics['predictions'], val_metrics['labels']):
-        status = "✓" if pred == label else "✗"
-        print(f"{status} Predicted: {pred}, Actual: {label}")
-    
-    print()
-    print("EVALUATION COMPLETE")
+    val_df = pd.DataFrame([{
+        'MAE': val_metrics['mae'],
+        'Accuracy (%)': val_metrics['accuracy'] * 100,
+        'Within-1 Acc (%)': val_metrics['within_1_accuracy'] * 100
+    }])
+    print(val_df.to_string(index=False))
     
     return counter, train_metrics, val_metrics
 
@@ -231,8 +221,8 @@ def visualize_sample_detections(video_dir: str = './video-data', num_samples: in
         
         # Get debug info including peak/valley frame indices (in resampled space)
         debug_info = counter.count_pushups(landmarks)
-        valleys = debug_info['valleys']
-        peaks = debug_info['peaks']
+        valleys = debug_info.valleys
+        peaks = debug_info.peaks
         
         print(f"Video: {video_filename}")
         print(f"  Source FPS: {source_fps:.2f}, Target FPS: {TARGET_FPS}, Ratio: {fps_ratio:.2f}")

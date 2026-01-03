@@ -70,7 +70,7 @@ class VideoDataset(Dataset):
             density_map = cache_data.get('density_map')
         else:
             video_path = os.path.join(self.video_dir, video_filename)
-            landmarks_sequence, density_map = self.feature_extractor.extract_joint_angles(video_path)
+            landmarks_sequence, density_map = self.feature_extractor.extract_features(video_path)
             cache_data = {
                 'angles': landmarks_sequence,
                 'density_map': density_map,

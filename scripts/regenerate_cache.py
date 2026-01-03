@@ -90,7 +90,7 @@ def regenerate_cache(
         
         try:
             # Extract joint angles and density map
-            angles_tensor, density_map = extractor.extract_joint_angles(str(video_path))
+            angles_tensor, density_map = extractor.extract_features(str(video_path))
             
             # Save to cache as a dict containing both tensors
             cache_data = {
