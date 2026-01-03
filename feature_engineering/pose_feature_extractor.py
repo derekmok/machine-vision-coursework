@@ -254,7 +254,7 @@ class PoseFeatureExtractor:
             return torch.zeros(num_frames, dtype=torch.float32)
         
         # Use the counter's debug method to get detected valleys
-        debug_info = counter.count_pushups_with_debug(angles_tensor)
+        debug_info = counter.count_pushups(angles_tensor)
         valleys = debug_info['valleys']
         
         # Create gaussian density map

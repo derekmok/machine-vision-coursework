@@ -11,10 +11,45 @@ Key Approach:
 4. Count complete push-up cycles
 """
 
-import numpy as np
-from scipy.signal import savgol_filter, find_peaks
+from dataclasses import dataclass
 from typing import Optional
+
 import matplotlib.pyplot as plt
+import numpy as np
+from scipy.ndimage import median_filter
+from scipy.signal import savgol_filter, find_peaks
+
+
+@dataclass
+class HeuristicParameters:
+    """Parameters for HeuristicPushupCounter.
+    
+    Attributes:
+        smoothing_window: Window size for Savitzky-Golay filter (must be odd)
+        poly_order: Polynomial order for smoothing
+        min_prominence: Minimum prominence threshold for peak detection
+        min_distance: Minimum distance between detected peaks
+        median_filter_size: Kernel size for median filter to remove outliers (must be odd)
+    """
+    smoothing_window: int
+    poly_order: int
+    min_prominence: float
+    min_distance: int
+    median_filter_size: int
+
+
+@dataclass
+class GridSearchResults:
+    """Results from grid search parameter optimization.
+    
+    Attributes:
+        best_params: Best parameter configuration
+        best_mae: Best Mean Absolute Error achieved with best_params
+        all_results: List of all configurations tested and their metrics
+    """
+    best_params: HeuristicParameters
+    best_mae: float
+    all_results: list
 
 
 class HeuristicPushupCounter:
@@ -32,6 +67,7 @@ class HeuristicPushupCounter:
         poly_order: Polynomial order for Savitzky-Golay smoothing
         min_prominence: Minimum prominence for peak detection (filters noise)
         min_distance: Minimum frames between peaks (prevents double-counting)
+        median_filter_size: Kernel size for median filter to remove outliers (must be odd)
     """
     
     # Angle feature indices in the 6-dimensional feature vector from data_loader.py
@@ -46,6 +82,7 @@ class HeuristicPushupCounter:
         poly_order: int = 3,
         min_prominence: float = 0.02,
         min_distance: int = 10,
+        median_filter_size: int = 3,
         skip_smoothing: bool = False,
     ):
         """Initialize the heuristic push-up counter.
@@ -61,18 +98,23 @@ class HeuristicPushupCounter:
             min_distance: Minimum number of frames between detected peaks.
                 Set based on the fastest expected push-up speed. At 30fps,
                 a distance of 10 means at most 3 push-ups per second.
-            skip_smoothing: If True, skip the Savitzky-Golay smoothing step.
+            median_filter_size: Kernel size for median filter to remove outliers.
+                Must be odd. Applied before Savitzky-Golay smoothing. Typical: 3-7.
+            skip_smoothing: If True, skip all smoothing steps.
                 Use this when the input sequence is already pre-smoothed.
         """
         if smoothing_window % 2 == 0:
             raise ValueError("smoothing_window must be odd")
         if poly_order >= smoothing_window:
             raise ValueError("poly_order must be less than smoothing_window")
+        if median_filter_size % 2 == 0:
+            raise ValueError("median_filter_size must be odd")
             
         self.smoothing_window = smoothing_window
         self.poly_order = poly_order
         self.min_prominence = min_prominence
         self.min_distance = min_distance
+        self.median_filter_size = median_filter_size
         self.skip_smoothing = skip_smoothing
     
     def extract_signal(self, landmarks: np.ndarray) -> np.ndarray:
@@ -101,11 +143,12 @@ class HeuristicPushupCounter:
             return right_elbow_angle
     
     def smooth_signal(self, signal: np.ndarray) -> np.ndarray:
-        """Apply Savitzky-Golay smoothing to reduce noise.
+        """Apply two-stage smoothing to reduce noise.
         
-        Savitzky-Golay filtering is preferred over simple moving average because
-        it better preserves peak shapes and locations, which is critical for
-        accurate peak detection.
+        Stage 1: Median filter removes outliers/spikes from pose detection
+                 failures or incorrect landmark positions.
+        Stage 2: Savitzky-Golay filter smooths high-frequency jitter while
+                 preserving signal peaks and timing (zero phase lag).
         
         If skip_smoothing is True, returns the signal unchanged.
         
@@ -121,9 +164,12 @@ class HeuristicPushupCounter:
             
         # Handle edge case where signal is shorter than window
         if len(signal) < self.smoothing_window:
-            # Fall back to simple padding or return as-is
             return signal
-            
+        
+        # Stage 1: Median filter to remove outliers
+        signal = median_filter(signal, size=self.median_filter_size)
+        
+        # Stage 2: Savitzky-Golay filter to smooth jitter
         return savgol_filter(signal, self.smoothing_window, self.poly_order)
     
     def detect_peaks(self, signal: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -156,46 +202,8 @@ class HeuristicPushupCounter:
         )
         
         return valleys, peaks
-    
-    def count_pushups(self, landmarks: np.ndarray) -> int:
-        """Count push-ups in an angle feature sequence.
-        
-        A complete push-up is counted as one valley (minimum elbow angle).
-        
-        Args:
-            landmarks: Numpy array of shape (T, 6) or torch.Tensor.
-                Can be the direct output from VideoDataset.
-                
-        Returns:
-            Integer count of push-ups detected.
-        """
-        # Convert torch tensor if needed
-        if hasattr(landmarks, 'numpy'):
-            landmarks = landmarks.numpy()
-            
-        # Handle potential zero-padded sequences by removing trailing zeros
-        # Check if entire rows are zeros (missing detection frames)
-        valid_mask = ~np.all(landmarks == 0, axis=1)
-        # Find the last valid frame
-        if valid_mask.any():
-            last_valid = np.where(valid_mask)[0][-1] + 1
-            landmarks = landmarks[:last_valid]
-        
-        if len(landmarks) < self.smoothing_window:
-            # Too short to analyze
-            return 0
-            
-        # Extract and smooth the signal
-        raw_signal = self.extract_signal(landmarks)
-        smoothed_signal = self.smooth_signal(raw_signal)
-        
-        # Detect peaks
-        valleys, peaks = self.detect_peaks(smoothed_signal)
-        
-        # Count valleys as push-ups (bottom position is more reliable)
-        return len(valleys)
-    
-    def count_pushups_with_debug(self, landmarks: np.ndarray) -> dict:
+
+    def count_pushups(self, landmarks: np.ndarray) -> dict:
         """Count push-ups and return debug information.
         
         Useful for visualization and parameter tuning.
@@ -261,7 +269,7 @@ class HeuristicPushupCounter:
         Returns:
             The matplotlib Figure object.
         """
-        debug = self.count_pushups_with_debug(landmarks)
+        debug = self.count_pushups(landmarks)
         
         if ax is None:
             fig, ax = plt.subplots(figsize=(12, 5))
@@ -332,7 +340,7 @@ def evaluate_on_dataset(
             length = batch_lengths[i].item()
             landmarks = batch_landmarks[i, :length].numpy()
             
-            pred = counter.count_pushups(landmarks)
+            pred = counter.count_pushups(landmarks)['count']
             actual = batch_labels[i].item()
             
             predictions.append(pred)
@@ -360,8 +368,9 @@ def grid_search_parameters(
     smoothing_windows: list[int] = [11, 15, 21, 31],
     min_prominences: list[float] = [5.0, 10.0, 15.0, 20.0],
     min_distances: list[int] = [5, 10, 15, 20, 30],
+    median_filter_sizes: list[int] = [3],
     poly_order: int = 3,
-) -> dict:
+) -> GridSearchResults:
     """Grid search to find optimal parameters.
     
     Args:
@@ -369,10 +378,11 @@ def grid_search_parameters(
         smoothing_windows: List of window sizes to try (must be odd).
         min_prominences: List of prominence values to try.
         min_distances: List of distance values to try.
+        median_filter_sizes: List of median filter kernel sizes to try (must be odd).
         poly_order: Polynomial order for all configurations.
         
     Returns:
-        Dictionary with:
+        GridSearchResults dataclass containing:
             - best_params: Best parameter configuration
             - best_mae: Best MAE achieved
             - all_results: All configurations and their results
@@ -381,47 +391,53 @@ def grid_search_parameters(
     best_params = None
     all_results = []
     
-    total = len(smoothing_windows) * len(min_prominences) * len(min_distances)
+    total = (len(smoothing_windows) * len(min_prominences) * 
+             len(min_distances) * len(median_filter_sizes))
     current = 0
     
     for window in smoothing_windows:
         for prominence in min_prominences:
             for distance in min_distances:
-                current += 1
-                print(f"[{current}/{total}] Testing window={window}, "
-                      f"prominence={prominence}, distance={distance}")
-                
-                counter = HeuristicPushupCounter(
-                    smoothing_window=window,
-                    poly_order=poly_order,
-                    min_prominence=prominence,
-                    min_distance=distance,
-                )
-                
-                metrics = evaluate_on_dataset(data_loader, counter)
-                
-                result = {
-                    'smoothing_window': window,
-                    'min_prominence': prominence,
-                    'min_distance': distance,
-                    'mae': metrics['mae'],
-                    'accuracy': metrics['accuracy'],
-                    'within_1_accuracy': metrics['within_1_accuracy'],
-                }
-                all_results.append(result)
-                
-                if metrics['mae'] < best_mae:
-                    best_mae = metrics['mae']
-                    best_params = {
+                for median_size in median_filter_sizes:
+                    current += 1
+                    print(f"[{current}/{total}] Testing window={window}, "
+                          f"prominence={prominence}, distance={distance}, "
+                          f"median_filter={median_size}")
+                    
+                    counter = HeuristicPushupCounter(
+                        smoothing_window=window,
+                        poly_order=poly_order,
+                        min_prominence=prominence,
+                        min_distance=distance,
+                        median_filter_size=median_size,
+                    )
+                    
+                    metrics = evaluate_on_dataset(data_loader, counter)
+                    
+                    result = {
                         'smoothing_window': window,
-                        'poly_order': poly_order,
                         'min_prominence': prominence,
                         'min_distance': distance,
+                        'median_filter_size': median_size,
+                        'mae': metrics['mae'],
+                        'accuracy': metrics['accuracy'],
+                        'within_1_accuracy': metrics['within_1_accuracy'],
                     }
-                    print(f"  -> New best MAE: {best_mae:.4f}")
+                    all_results.append(result)
+                    
+                    if metrics['mae'] < best_mae:
+                        best_mae = metrics['mae']
+                        best_params = HeuristicParameters(
+                            smoothing_window=window,
+                            poly_order=poly_order,
+                            min_prominence=prominence,
+                            min_distance=distance,
+                            median_filter_size=median_size,
+                        )
+                        print(f"  -> New best MAE: {best_mae:.4f}")
     
-    return {
-        'best_params': best_params,
-        'best_mae': best_mae,
-        'all_results': all_results,
-    }
+    return GridSearchResults(
+        best_params=best_params,
+        best_mae=best_mae,
+        all_results=all_results,
+    )

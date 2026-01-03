@@ -1,8 +1,9 @@
+import os
+import time
+from typing import Callable
+
 import torch
 from torch.utils.data import Dataset
-import os
-from typing import Callable, Optional
-import time
 
 from feature_engineering.pose_feature_extractor import PoseFeatureExtractor
 
@@ -16,7 +17,7 @@ class TransformDataset(Dataset):
     This allows applying different transforms to training vs validation subsets.
     """
     
-    def __init__(self, dataset: Dataset, transform: Optional[Callable] = None):
+    def __init__(self, dataset: Dataset, transform: Callable = lambda x : x):
         self.dataset = dataset
         self.transform = transform
     
@@ -26,10 +27,7 @@ class TransformDataset(Dataset):
     def __getitem__(self, idx):
         sequence, density_map, label, length = self.dataset[idx]
         
-        if self.transform is not None:
-            sequence, density_map, label, length = self.transform(sequence, density_map, label, length)
-        
-        return sequence, density_map, label, length
+        return self.transform(sequence, density_map, label, length)
 
 class VideoDataset(Dataset):
     """Dataset for loading videos from a folder. Labels from filename prefix.
@@ -46,7 +44,6 @@ class VideoDataset(Dataset):
         self.video_dir = video_dir
         self.cache_dir = cache_dir
         self.is_inference = is_inference
-        # Skip density map computation during inference for efficiency
         self.feature_extractor = PoseFeatureExtractor(media_pipe_model_path, compute_density_map=not is_inference)
         
         os.makedirs(self.cache_dir, exist_ok=True)
@@ -72,11 +69,8 @@ class VideoDataset(Dataset):
             landmarks_sequence = cache_data['angles']
             density_map = cache_data.get('density_map')
         else:
-            time_start = time.time()
-            print(f"Extracting features for: {video_filename}")
             video_path = os.path.join(self.video_dir, video_filename)
             landmarks_sequence, density_map = self.feature_extractor.extract_joint_angles(video_path)
-            print(f"Features extracted for: {video_filename} in {(time.time() - time_start):.2f}s")
             cache_data = {
                 'angles': landmarks_sequence,
                 'density_map': density_map,
@@ -87,6 +81,7 @@ class VideoDataset(Dataset):
 
         if self.is_inference:
             return landmarks_sequence, label
+
         return landmarks_sequence, density_map, label, len(landmarks_sequence)
 
 

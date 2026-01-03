@@ -24,11 +24,10 @@
 
 # %%
 import torch
-import torch.nn as nn
-from torch.utils.data import DataLoader
-
+from torch.utils.data import DataLoader, random_split
 
 from data_loader import VideoDataset
+
 
 def get_dataloaders(video_dir, batch_size=1, val_split=0.2):
     """Create train and validation dataloaders for landmark sequences.
@@ -43,26 +42,17 @@ def get_dataloaders(video_dir, batch_size=1, val_split=0.2):
         val_loader: DataLoader for validation data.
     """
     
-    # First, create a dataset without transforms to determine the split indices
     full_dataset = VideoDataset(video_dir)
     
     val_size = int(len(full_dataset) * val_split)
     train_size = len(full_dataset) - val_size
 
-    # Get the indices for train and validation splits
-    generator = torch.Generator().manual_seed(42)
-    indices = torch.randperm(len(full_dataset), generator=generator).tolist()
-    train_indices = indices[:train_size]
-    val_indices = indices[train_size:]
-    
-    # Create separate datasets for train (with augmentation) and val (without)
-    train_dataset = VideoDataset(video_dir)
-    val_dataset = VideoDataset(video_dir)
-    
-    # Use Subset to apply the split indices
-    from torch.utils.data import Subset
-    train_subset = Subset(train_dataset, train_indices)
-    val_subset = Subset(val_dataset, val_indices)
+    # Perform train/val split with fixed seed for reproducibility
+    train_subset, val_subset = random_split(
+        full_dataset,
+        [train_size, val_size],
+        generator=torch.Generator().manual_seed(42)
+    )
 
     train_loader = DataLoader(
         train_subset,
@@ -87,6 +77,8 @@ video_dir = './video-data'
 
 # %%
 from count_pushups_heuristic import (
+    GridSearchResults,
+    HeuristicParameters,
     HeuristicPushupCounter,
     evaluate_on_dataset,
     grid_search_parameters,
@@ -119,12 +111,20 @@ def run_heuristic_evaluation(
         smoothing_windows=[11, 15, 21, 31],
         min_prominences=[0.03, 0.05, 0.08, 0.11],
         min_distances=[5, 10, 15, 20, 30],
+        median_filter_sizes=[3, 5, 7],
     )
     
-    print(f"Best parameters: {search_results['best_params']}")
-    print(f"Best MAE on training set: {search_results['best_mae']:.4f}")
+    print(f"Best parameters: {search_results.best_params}")
+    print(f"Best MAE on training set: {search_results.best_mae:.4f}")
     
-    counter = HeuristicPushupCounter(**search_results['best_params'])
+    # Unpack dataclass fields to pass to HeuristicPushupCounter
+    counter = HeuristicPushupCounter(
+        smoothing_window=search_results.best_params.smoothing_window,
+        poly_order=search_results.best_params.poly_order,
+        min_prominence=search_results.best_params.min_prominence,
+        min_distance=search_results.best_params.min_distance,
+        median_filter_size=search_results.best_params.median_filter_size,
+    )
     
     # Evaluate on training set
     print("Training Set Results:")
@@ -171,7 +171,6 @@ counter, train_metrics, val_metrics = run_heuristic_evaluation(
 # %%
 import matplotlib.pyplot as plt
 import cv2
-from IPython.display import display
 
 
 def get_video_frame(video_path: str, frame_idx: int):
@@ -231,7 +230,7 @@ def visualize_sample_detections(video_dir: str = './video-data', num_samples: in
         fps_ratio = source_fps / TARGET_FPS
         
         # Get debug info including peak/valley frame indices (in resampled space)
-        debug_info = counter.count_pushups_with_debug(landmarks)
+        debug_info = counter.count_pushups(landmarks)
         valleys = debug_info['valleys']
         peaks = debug_info['peaks']
         
