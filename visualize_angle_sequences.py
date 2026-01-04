@@ -27,6 +27,7 @@
 # 6. **Right Body Angle** (shoulder-hip-knee)
 
 # %%
+from feature_engineering.pose_feature_extractor import PoseExtractionResult
 import torch
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -35,7 +36,7 @@ import glob
 import numpy as np
 
 # %%
-CACHE_DIR = ".landmark_cache"
+CACHE_DIR = ".feature_cache"
 
 ANGLE_NAMES = [
     "Left Elbow",
@@ -45,6 +46,70 @@ ANGLE_NAMES = [
     "Left Body (Hip)",
     "Right Body (Hip)"
 ]
+
+
+# %% [markdown]
+# ## Helper Functions
+
+# %%
+def load_features(file_path: str) -> tuple:
+    """Load features from cache file and extract common metadata.
+    
+    Returns:
+        Tuple of (features, angles, density_map, filename, label)
+    """
+    features: PoseExtractionResult = torch.load(file_path, weights_only=False)
+    angles = features.raw_landmarks
+    density_map = features.density_map
+    filename = os.path.basename(file_path)
+    label = filename.split('_')[0]
+    return features, angles, density_map, filename, label
+
+
+def get_axis(axes, idx: int, total: int):
+    """Get the correct axis from subplot axes array.
+    
+    Handles the case where there's only one subplot (axes is not an array).
+    """
+    return axes[idx] if total > 1 else axes
+
+
+def plot_density_with_elbow(ax, frames, angles, density_map, title: str):
+    """Plot elbow angles and density map on twin axes.
+    
+    Args:
+        ax: Primary matplotlib axis
+        frames: Array of frame indices
+        angles: Tensor of angle values
+        density_map: Tensor of density values
+        title: Title for the plot
+    """
+    ax2 = ax.twinx()
+    
+    # Plot elbow angles (average of left and right)
+    avg_elbow = (angles[:, 0] + angles[:, 1]) / 2
+    ax.plot(frames, avg_elbow.numpy(), label='Avg Elbow Angle', 
+            color='steelblue', linewidth=1.5, alpha=0.7)
+    
+    # Plot density map as filled area
+    ax2.fill_between(frames, density_map.numpy(), alpha=0.4, 
+                     color='orange', label='Density Map')
+    ax2.plot(frames, density_map.numpy(), color='darkorange', 
+             linewidth=1.5, alpha=0.8)
+    
+    ax.set_xlabel('Frame')
+    ax.set_ylabel('Elbow Angle (normalized)', color='steelblue')
+    ax2.set_ylabel('Density', color='darkorange')
+    ax.set_title(title)
+    ax.tick_params(axis='y', labelcolor='steelblue')
+    ax2.tick_params(axis='y', labelcolor='darkorange')
+    ax.grid(True, alpha=0.3)
+    ax2.set_ylim(0, 1.1)
+    
+    # Combined legend
+    lines1, labels1 = ax.get_legend_handles_labels()
+    lines2, labels2 = ax2.get_legend_handles_labels()
+    ax.legend(lines1 + lines2, labels1 + labels2, loc='upper right')
 
 # %% [markdown]
 # ## Load Cached Angle Sequences
@@ -83,12 +148,9 @@ for f in sample_files:
 fig, axes = plt.subplots(len(sample_files), 1, figsize=(14, 4 * len(sample_files)))
 
 for idx, file_path in enumerate(sample_files):
-    cache_data = torch.load(file_path, weights_only=True)
-    angles, density_map = cache_data['angles'], cache_data['density_map']
-    filename = os.path.basename(file_path)
-    label = filename.split('_')[0]
+    _, angles, _, filename, label = load_features(file_path)
     
-    ax = axes[idx] if len(sample_files) > 1 else axes
+    ax = get_axis(axes, idx, len(sample_files))
     frames = np.arange(len(angles))
     
     for i, angle_name in enumerate(ANGLE_NAMES):
@@ -111,12 +173,9 @@ plt.show()
 fig, axes = plt.subplots(len(sample_files), 1, figsize=(14, 3 * len(sample_files)))
 
 for idx, file_path in enumerate(sample_files):
-    cache_data = torch.load(file_path, weights_only=True)
-    angles, density_map = cache_data['angles'], cache_data['density_map']
-    filename = os.path.basename(file_path)
-    label = filename.split('_')[0]
+    _, angles, _, filename, label = load_features(file_path)
     
-    ax = axes[idx] if len(sample_files) > 1 else axes
+    ax = get_axis(axes, idx, len(sample_files))
     frames = np.arange(len(angles))
     
     # Plot left and right elbow angles
@@ -135,121 +194,13 @@ for idx, file_path in enumerate(sample_files):
 plt.tight_layout()
 plt.show()
 
-# %% [markdown]
-# ## Density Map Visualization
-#
-# The density map shows gaussian bumps centered at detected push-up positions (elbow angle valleys).
-
-# %%
-fig, axes = plt.subplots(len(sample_files), 1, figsize=(14, 4 * len(sample_files)))
-
-for idx, file_path in enumerate(sample_files):
-    cache_data = torch.load(file_path, weights_only=True)
-    angles, density_map = cache_data['angles'], cache_data['density_map']
-    filename = os.path.basename(file_path)
-    label = filename.split('_')[0]
-    
-    ax = axes[idx] if len(sample_files) > 1 else axes
-    frames = np.arange(len(angles))
-    
-    # Create twin axis for density map
-    ax2 = ax.twinx()
-    
-    # Plot elbow angles (average of left and right)
-    avg_elbow = (angles[:, 0] + angles[:, 1]) / 2
-    ax.plot(frames, avg_elbow.numpy(), label='Avg Elbow Angle', color='steelblue', linewidth=1.5, alpha=0.7)
-    
-    # Plot density map as filled area
-    ax2.fill_between(frames, density_map.numpy(), alpha=0.4, color='orange', label='Density Map')
-    ax2.plot(frames, density_map.numpy(), color='darkorange', linewidth=1.5, alpha=0.8)
-    
-    ax.set_xlabel('Frame')
-    ax.set_ylabel('Elbow Angle (normalized)', color='steelblue')
-    ax2.set_ylabel('Density', color='darkorange')
-    ax.set_title(f'Elbow Angles & Density Map - {filename} ({label} push-ups)')
-    ax.tick_params(axis='y', labelcolor='steelblue')
-    ax2.tick_params(axis='y', labelcolor='darkorange')
-    ax.grid(True, alpha=0.3)
-    ax2.set_ylim(0, 1.1)
-    
-    # Combined legend
-    lines1, labels1 = ax.get_legend_handles_labels()
-    lines2, labels2 = ax2.get_legend_handles_labels()
-    ax.legend(lines1 + lines2, labels1 + labels2, loc='upper right')
-
-plt.tight_layout()
-plt.show()
-
-# %% [markdown]
-# ## Compare Angle Patterns Across Different Push-up Counts
-
-# %%
-# Plot the angle with maximum variance (typically best for detecting push-ups)
-fig, ax = plt.subplots(figsize=(14, 6))
-
-colors = plt.cm.viridis(np.linspace(0, 1, len(sample_files)))
-
-for idx, file_path in enumerate(sample_files):
-    cache_data = torch.load(file_path, weights_only=True)
-    angles, density_map = cache_data['angles'], cache_data['density_map']
-    filename = os.path.basename(file_path)
-    label = filename.split('_')[0]
-    
-    # Use the elbow with greater variance for this video
-    left_var = angles[:, 0].var().item()
-    right_var = angles[:, 1].var().item()
-    elbow_idx = 0 if left_var > right_var else 1
-    elbow_name = "Left" if elbow_idx == 0 else "Right"
-    
-    frames = np.arange(len(angles))
-    ax.plot(frames, angles[:, elbow_idx].numpy(), 
-            label=f'{label} push-ups ({elbow_name} elbow)', 
-            color=colors[idx], linewidth=1.5, alpha=0.8)
-
-ax.set_xlabel('Frame', fontsize=12)
-ax.set_ylabel('Elbow Angle (normalized)', fontsize=12)
-ax.set_title('Elbow Angle Patterns Across Different Push-up Counts', fontsize=14)
-ax.legend(loc='upper right')
-ax.grid(True, alpha=0.3)
-
-plt.tight_layout()
-plt.show()
-
-# %% [markdown]
-# ## Subplots: Separate Angle Types
-
-# %%
-# Pick one sample video
-sample_path = sample_files[1]  # 2 push-ups
-cache_data = torch.load(sample_path, weights_only=True)
-angles, density_map = cache_data['angles'], cache_data['density_map']
-filename = os.path.basename(sample_path)
-
-fig, axes = plt.subplots(3, 2, figsize=(14, 10))
-frames = np.arange(len(angles))
-
-for i, (ax, name) in enumerate(zip(axes.flat, ANGLE_NAMES)):
-    ax.plot(frames, angles[:, i].numpy(), color='steelblue', linewidth=1.5)
-    ax.fill_between(frames, angles[:, i].numpy(), alpha=0.3, color='steelblue')
-    ax.set_title(name, fontsize=12)
-    ax.set_xlabel('Frame')
-    ax.set_ylabel('Angle (normalized)')
-    ax.grid(True, alpha=0.3)
-    ax.set_ylim(0, 1.1)
-
-fig.suptitle(f'All Joint Angles - {filename}', fontsize=14, y=1.02)
-plt.tight_layout()
-plt.show()
 
 # %% [markdown]
 # ## Statistics Summary
 
 # %%
 for file_path in sample_files:
-    cache_data = torch.load(file_path, weights_only=True)
-    angles, density_map = cache_data['angles'], cache_data['density_map']
-    filename = os.path.basename(file_path)
-    label = filename.split('_')[0]
+    _, angles, density_map, filename, label = load_features(file_path)
     
     # Build statistics DataFrame
     stats_data = []
@@ -279,6 +230,26 @@ for file_path in sample_files:
     display(df.round(3))
 
 # %% [markdown]
+# ## Density Map Visualization
+#
+# The density map shows gaussian bumps centered at detected push-up positions (elbow angle valleys).
+
+# %%
+fig, axes = plt.subplots(len(sample_files), 1, figsize=(14, 4 * len(sample_files)))
+
+for idx, file_path in enumerate(sample_files):
+    _, angles, density_map, filename, label = load_features(file_path)
+    
+    ax = get_axis(axes, idx, len(sample_files))
+    frames = np.arange(len(angles))
+    
+    title = f'Elbow Angles & Density Map - {filename} ({label} push-ups)'
+    plot_density_with_elbow(ax, frames, angles, density_map, title)
+
+plt.tight_layout()
+plt.show()
+
+# %% [markdown]
 # ## Verify Density Map Sums
 #
 # Check all samples to ensure the sum of the density map matches the labeled push-up count.
@@ -288,10 +259,8 @@ mismatches = []
 tolerance = 0.1
 
 for file_path in cache_files:
-    cache_data = torch.load(file_path, weights_only=True)
-    density_map = cache_data['density_map']
-    filename = os.path.basename(file_path)
-    label = int(filename.split('_')[0])
+    _, _, density_map, filename, label = load_features(file_path)
+    label = int(label)  # Convert to int for comparison
     
     density_sum = density_map.sum().item()
     diff = abs(density_sum - label)
@@ -324,39 +293,15 @@ if mismatches:
     
     for idx, mismatch in enumerate(samples_to_plot):
         file_path = mismatch['Path']
-        cache_data = torch.load(file_path, weights_only=True)
-        angles, density_map = cache_data['angles'], cache_data['density_map']
-        filename = mismatch['Filename']
+        _, angles, density_map, filename, _ = load_features(file_path)
         label = mismatch['Label']
         density_sum = mismatch['Density Sum']
         
-        ax = axes[idx] if len(samples_to_plot) > 1 else axes
+        ax = get_axis(axes, idx, len(samples_to_plot))
         frames = np.arange(len(angles))
         
-        # Create twin axis for density map
-        ax2 = ax.twinx()
-        
-        # Plot elbow angles (average of left and right)
-        avg_elbow = (angles[:, 0] + angles[:, 1]) / 2
-        ax.plot(frames, avg_elbow.numpy(), label='Avg Elbow Angle', color='steelblue', linewidth=1.5, alpha=0.7)
-        
-        # Plot density map as filled area
-        ax2.fill_between(frames, density_map.numpy(), alpha=0.4, color='orange', label='Density Map')
-        ax2.plot(frames, density_map.numpy(), color='darkorange', linewidth=1.5, alpha=0.8)
-        
-        ax.set_xlabel('Frame')
-        ax.set_ylabel('Elbow Angle (normalized)', color='steelblue')
-        ax2.set_ylabel('Density', color='darkorange')
-        ax.set_title(f'MISMATCH - {filename} (Label: {label}, Sum: {density_sum:.2f})')
-        ax.tick_params(axis='y', labelcolor='steelblue')
-        ax2.tick_params(axis='y', labelcolor='darkorange')
-        ax.grid(True, alpha=0.3)
-        ax2.set_ylim(0, 1.1)
-        
-        # Combined legend
-        lines1, labels1 = ax.get_legend_handles_labels()
-        lines2, labels2 = ax2.get_legend_handles_labels()
-        ax.legend(lines1 + lines2, labels1 + labels2, loc='upper right')
+        title = f'MISMATCH - {filename} (Label: {label}, Sum: {density_sum:.2f})'
+        plot_density_with_elbow(ax, frames, angles, density_map, title)
 
     plt.tight_layout()
     plt.show()

@@ -46,7 +46,7 @@ def evaluate_on_validation_data(
         print("Skipping validation evaluation.")
         return None
     
-    val_dataset = VideoDataset.for_inference(validation_dir)
+    val_dataset = VideoDataset.for_inference(validation_dir, cache_dir=".validation-cache")
     
     if len(val_dataset) == 0:
         print("No videos found in validation directory.")

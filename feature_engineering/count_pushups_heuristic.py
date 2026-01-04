@@ -173,8 +173,7 @@ class HeuristicPushupCounter:
         _, elbow_index = self._extract_signal(landmarks)
         
         smoothed_landmarks = self._smooth_landmarks(landmarks)
-        
-        raw_signal = landmarks[:, elbow_index]
+
         smoothed_signal = smoothed_landmarks[:, elbow_index]
         
         if len(smoothed_signal) < self.smoothing_window:

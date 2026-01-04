@@ -87,5 +87,9 @@ class VideoDataset(Dataset):
         return os.path.join(self.cache_dir, cache_filename)
 
     @staticmethod
-    def for_inference(video_dir: str) -> 'VideoDataset':
-        return VideoDataset(video_dir, lambda features : (features.smoothed_landmarks,), is_inference=True)
+    def for_inference(video_dir: str, cache_dir: str=DEFAULT_CACHE_DIR) -> 'VideoDataset':
+        return VideoDataset(
+            video_dir,
+            lambda features : (features.smoothed_landmarks,),
+            is_inference=True, cache_dir=cache_dir
+        )
