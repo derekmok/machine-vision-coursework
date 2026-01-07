@@ -1,0 +1,15 @@
+torch
+matplotlib
+numpy
+notebook
+mediapipe
+torchvision
+opencv-python
+boto3
+scipy
+huggingface-hub
+pandas
+scikit-learn
+tqdm
+ipywidgets
+humanize
