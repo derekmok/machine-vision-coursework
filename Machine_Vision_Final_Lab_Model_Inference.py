@@ -16,7 +16,7 @@
 # %% [markdown] colab_type="text" id="view-in-github"
 # <a href="https://colab.research.google.com/github/derekmok/machine-vision-coursework/blob/main/Machine_Vision_Final_Lab_Model_Inference.ipynb" target="_parent"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"/></a>
 
-# %% colab={"base_uri": "https://localhost:8080/"} id="bSu3U-SNu8v6" outputId="36cde625-f8f7-4037-b699-67a041775455"
+# %% colab={"base_uri": "https://localhost:8080/"} id="bSu3U-SNu8v6" outputId="5ddf74be-2b61-4815-ce8a-5c180ac9858a"
 # ===== INSTALL DEPENDENCIES =====
 # !git init .
 # !git remote add origin https://github.com/derekmok/machine-vision-coursework.git
@@ -123,7 +123,7 @@ from neural_net.data_loader import VideoDataset
 #
 # This code just downloads the same model which you uploaded in the last notebook.
 
-# %% colab={"base_uri": "https://localhost:8080/", "height": 66, "referenced_widgets": ["203abeec725944909cb8ec2b39f3e2af", "70a4207be31e43ad811c8abd3be7f9ad", "2a4dd8eb46d5479abdea9d214c6e541c", "1c3c510ca9a248a1b942e4b5e3767cf2", "6747f1470898402b81ef8c0a3eb94245", "cd65765c817a4a35b79cb0d58a4f3a86", "b431d05102dc4ea28feecc8c4dc13916", "c5777468dc0f413e9237218bf5dc9d21", "25baeea261454e7a819d848e8940f350", "db6d5a814c6c45ba86470919d259619d", "10234769f7ed4e73b3348a9bd5d9e2ed"]} id="LWuMOqY_sOdg" outputId="f65c7fe1-4950-4229-a51d-87d4b9e43fce"
+# %% colab={"base_uri": "https://localhost:8080/", "height": 194, "referenced_widgets": ["cfdc1400987345568482d2a09b1bb388", "df6c93ec63634bb39453e5a4b0b7718a", "d05b7e235252405a841ebd52fb9076e7", "f8e5ff077f814a41b4a9fa6f1fe2adc1", "7366dc70bfe743bf951be84626837a38", "0e788161d33f4a26a1bf3f9fa539dc32", "d8cd8f46840a40809e52b19cd6273828", "a885dec216b84294ad34b7628c19741f", "7e8946e7a8d2476a9acc093f3be5c320", "602e1b6c06794838992edb63a52bd236", "b900927fbcee4d579949d0c4c1f185d7"]} id="LWuMOqY_sOdg" outputId="b47126a3-940b-4cc8-b9e1-b837e696fbf0"
 # =============================================================================
 # DOWNLOAD MODEL FROM HUGGING FACE
 # =============================================================================
@@ -147,7 +147,7 @@ model = load_model_from_hub(f"{hf_username}/mv-final-assignment", num_classes=10
 #
 # This is your last chance to verify this before submission.
 
-# %% colab={"base_uri": "https://localhost:8080/"} id="QzgdieGiw4_k" outputId="f655601a-a58c-449f-c5d4-3a3de3473f58"
+# %% colab={"base_uri": "https://localhost:8080/"} id="QzgdieGiw4_k" outputId="d2cacecd-19be-4655-cbb9-37ec99be0657"
 def evaluate(model, test_loader, dataset, device):
     model.eval()
     correct = 0
