@@ -33,7 +33,7 @@ import boto3
 from botocore import UNSIGNED
 from botocore.config import Config
 import os
-from tqdm import tqdm
+from tqdm.auto import tqdm
 import time
 
 # %% [markdown] id="PMr99Yo7x8N1"
